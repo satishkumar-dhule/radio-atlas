@@ -18,6 +18,9 @@ interface TopBarProps {
   onToggleTheme: () => void;
   isZenMode: boolean;
   onToggleZenMode: () => void;
+  onOpenAnalytics?: () => void;
+  onOpenScreensaver?: () => void;
+  activeModal?: string | null;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -37,6 +40,9 @@ export const TopBar: React.FC<TopBarProps> = ({
   onToggleTheme,
   isZenMode,
   onToggleZenMode,
+  onOpenAnalytics,
+  onOpenScreensaver,
+  activeModal,
 }) => {
   const [utcTime, setUtcTime] = useState<string>('00:00 UTC');
   const [isDrifting, setIsDrifting] = useState<boolean>(false);
@@ -123,10 +129,15 @@ export const TopBar: React.FC<TopBarProps> = ({
       <div className="flex items-center gap-2 sm:gap-2.5">
         {/* Quick Search */}
         <button
-          onClick={onOpenQuickSearch}
+          onClick={() => {
+            setIsMenuOpen(false);
+            onOpenQuickSearch();
+          }}
           title="Quick Search (Cmd+K)"
-          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border transition-all text-[11px] font-mono ${
-            isLightMode
+          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border transition-all text-[11px] font-mono active:scale-95 ${
+            activeModal === 'search'
+              ? 'bg-[#ffc174]/20 border-[#ffc174]/70 text-[#ffc174] shadow-[0_0_8px_rgba(255,193,116,0.3)] font-semibold'
+              : isLightMode
               ? 'bg-white/60 hover:bg-white border-slate-200/80 text-slate-700'
               : 'bg-white/[0.03] hover:bg-white/[0.08] border-white/5 text-[#a5b0c4] hover:text-[#e2e6f0]'
           }`}
@@ -138,7 +149,10 @@ export const TopBar: React.FC<TopBarProps> = ({
 
         {/* Drift Button */}
         <button
-          onClick={handleDriftClick}
+          onClick={() => {
+            setIsMenuOpen(false);
+            handleDriftClick();
+          }}
           title="Drift to random airwave"
           className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-[#ffc174]/40 transition-all text-[11px] text-[#ffc174] font-body tracking-wider group active:scale-95"
         >
@@ -151,6 +165,51 @@ export const TopBar: React.FC<TopBarProps> = ({
           </span>
           <span className="tracking-wide text-[10px] uppercase font-mono">Drift</span>
         </button>
+
+        {/* Deep Google Analytics 4 Telemetry Status */}
+        {onOpenAnalytics && (
+          <button
+            onClick={() => {
+              setIsMenuOpen(false);
+              onOpenAnalytics();
+            }}
+            title="Google Analytics 4 Live Telemetry (Click to inspect real-time events)"
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border transition-all text-[11px] font-mono group active:scale-95 ${
+              activeModal === 'analytics'
+                ? 'bg-[#4edea3]/25 border-[#4edea3]/80 text-[#4edea3] shadow-[0_0_8px_rgba(78,222,163,0.3)] font-semibold'
+                : isLightMode
+                ? 'bg-emerald-500/10 hover:bg-emerald-500/20 border-emerald-500/30 text-emerald-700'
+                : 'bg-[#4edea3]/10 hover:bg-[#4edea3]/20 border-[#4edea3]/30 text-[#4edea3]'
+            }`}
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-[#4edea3] shadow-[0_0_6px_#4edea3] animate-pulse" />
+            <span className="text-[10px] uppercase font-semibold">GA4</span>
+            <span className="hidden xl:inline text-[9px] opacity-75">Live</span>
+          </button>
+        )}
+
+        {/* Screensaver Launch Button */}
+        {onOpenScreensaver && (
+          <button
+            onClick={() => {
+              setIsMenuOpen(false);
+              onOpenScreensaver();
+            }}
+            title="Launch Ambient CRT Screensaver with Live Audio Visualizer"
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-full border transition-all text-[11px] font-mono group active:scale-95 ${
+              activeModal === 'screensaver'
+                ? 'bg-[#8ed5ff]/25 border-[#8ed5ff]/80 text-[#8ed5ff] shadow-[0_0_8px_rgba(142,213,255,0.3)] font-semibold'
+                : isLightMode
+                ? 'bg-sky-500/10 hover:bg-sky-500/20 border-sky-500/30 text-sky-700'
+                : 'bg-white/[0.04] hover:bg-white/[0.08] border-white/10 hover:border-[#8ed5ff]/40 text-[#8ed5ff]'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[13px] text-[#8ed5ff] group-hover:scale-110 transition-transform">
+              tv_gen
+            </span>
+            <span className="tracking-wide text-[10px] uppercase font-mono">Screensaver</span>
+          </button>
+        )}
 
         {/* Lightweight Tools Overflow Menu */}
         <div className="relative" ref={menuRef}>
@@ -195,6 +254,17 @@ export const TopBar: React.FC<TopBarProps> = ({
                     {bookmarksCount}
                   </span>
                 )}
+              </button>
+
+              <button
+                onClick={() => {
+                  if (onOpenScreensaver) onOpenScreensaver();
+                  setIsMenuOpen(false);
+                }}
+                className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors text-left"
+              >
+                <span className="material-symbols-outlined text-[15px] text-[#8ed5ff]">tv_gen</span>
+                <span>Screensaver View</span>
               </button>
 
               <button
@@ -250,6 +320,17 @@ export const TopBar: React.FC<TopBarProps> = ({
               >
                 <span className="material-symbols-outlined text-[15px] text-[#a5b0c4]">hub</span>
                 <span>Station Directory</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  if (onOpenAnalytics) onOpenAnalytics();
+                  setIsMenuOpen(false);
+                }}
+                className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors text-left"
+              >
+                <span className="material-symbols-outlined text-[15px] text-[#4edea3]">insights</span>
+                <span>Google Analytics 4</span>
               </button>
 
               <div className="h-[1px] bg-current opacity-10 my-1" />

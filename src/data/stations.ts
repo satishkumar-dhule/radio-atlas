@@ -1,4 +1,5 @@
 import { Station, RadioGardenPlace } from '../types/radio';
+import { radioGardenService } from '../services/radioGardenService';
 import rawStations from './radioGardenStations.json';
 import rawPlaces from './radioGardenPlaces.json';
 
@@ -40,6 +41,7 @@ export const RADIO_GARDEN_STATIONS: Station[] = (rawStations as unknown as Stati
 });
 
 export const RADIO_GARDEN_PLACES: RadioGardenPlace[] = rawPlaces as unknown as RadioGardenPlace[];
+export const RADIO_GARDEN_ALL_PLACES: RadioGardenPlace[] = radioGardenService.getAllPlaces();
 
 // Default initial stations for map beacons (one prominent carrier per iconic world hub from Radio Garden)
 export const FEATURED_STATIONS: Station[] = [

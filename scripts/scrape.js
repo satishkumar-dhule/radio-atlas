@@ -224,13 +224,23 @@ async function run() {
     'utf-8'
   );
 
+  // Save compact global places database with all 12k+ places
+  const compactAllPlaces = allPlaces.map((p) => [
+    p.id,
+    p.title,
+    p.country,
+    Math.round(p.geo[0] * 1000) / 1000,
+    Math.round(p.geo[1] * 1000) / 1000,
+    p.size || 1,
+  ]);
+
   fs.writeFileSync(
-    path.join(outDir, 'radioGardenPlaces.json'),
-    JSON.stringify(processedPlaces, null, 2),
+    path.join(outDir, 'radioGardenAllPlacesCompact.json'),
+    JSON.stringify(compactAllPlaces),
     'utf-8'
   );
 
-  console.log('Successfully saved radioGardenStations.json and radioGardenPlaces.json!');
+  console.log(`Successfully saved radioGardenStations.json, radioGardenPlaces.json and all ${allPlaces.length} places in radioGardenAllPlacesCompact.json!`);
 }
 
 run();

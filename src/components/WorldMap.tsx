@@ -1,452 +1,753 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import { Station, RadioGardenPlace } from '../types/radio';
+import { radioGardenService } from '../services/radioGardenService';
+import { SkinThemeId } from '../types/wallpaper';
+import { analytics } from '../services/analytics';
+
+export type MapTileMode = 'cyber' | 'satellite' | 'topo';
 
 interface WorldMapProps {
   stations: Station[];
+  allStations?: Station[];
   allPlaces?: RadioGardenPlace[];
   activeStation: Station;
   onSelectStation: (station: Station) => void;
   isPlaying: boolean;
   isLightMode: boolean;
+  skinTheme?: SkinThemeId;
+  onMapClick?: () => void;
+}
+
+interface ClickRadarPing {
+  id: number;
+  lat: number;
+  lng: number;
+  targetLat: number;
+  targetLng: number;
+  placeTitle: string;
+  distanceKm: number;
+}
+
+interface FanOutStationCluster {
+  place: RadioGardenPlace;
+  stations: Station[];
+  lat: number;
+  lng: number;
+  isLoading: boolean;
+}
+
+// Great-circle haversine distance in km
+function haversineDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.round(R * c);
 }
 
 export const WorldMap: React.FC<WorldMapProps> = ({
   stations,
+  allStations = [],
   allPlaces = [],
   activeStation,
   onSelectStation,
   isPlaying,
   isLightMode,
+  skinTheme = 'amber',
+  onMapClick,
 }) => {
-  const [showAllNodes, setShowAllNodes] = useState<boolean>(true);
-  const [showDayNight, setShowDayNight] = useState<boolean>(true);
-  const [showSkywaveBeam, setShowSkywaveBeam] = useState<boolean>(true);
+  const mapContainerRef = useRef<HTMLDivElement | null>(null);
+  const mapInstanceRef = useRef<L.Map | null>(null);
+  const tileLayerRef = useRef<L.TileLayer | null>(null);
+  const placesCanvasLayerRef = useRef<L.LayerGroup | null>(null);
+  const activeBeaconLayerRef = useRef<L.LayerGroup | null>(null);
+  const skywaveLayerRef = useRef<L.LayerGroup | null>(null);
+  const canvasRendererRef = useRef<L.Canvas | null>(null);
 
-  // Pan & Zoom state
-  const [zoom, setZoom] = useState<number>(1.0);
-  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const [isDragging, setIsDragging] = useState<boolean>(false);
-  const [dragStart, setDragStart] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const [hasMoved, setHasMoved] = useState<boolean>(false);
+  // Default to 'cyber' or user preference
+  const [tileMode, setTileMode] = useState<MapTileMode>('cyber');
+  const [activeRadarPing, setActiveRadarPing] = useState<ClickRadarPing | null>(null);
+  const [fanOutCluster, setFanOutCluster] = useState<FanOutStationCluster | null>(null);
 
-  const containerRef = useRef<HTMLDivElement | null>(null);
+  // 100% Free & No API Key Required Tile Providers with accurate subdomains
+  const TILE_PROVIDERS: Record<
+    MapTileMode,
+    {
+      url: string;
+      subdomains: string[];
+      maxZoom: number;
+      label: string;
+      shortLabel: string;
+      icon: string;
+      description: string;
+    }
+  > = useMemo(
+    () => ({
+      cyber: {
+        url: isLightMode
+          ? 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
+          : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+        subdomains: ['a', 'b', 'c', 'd'],
+        maxZoom: 19,
+        label: 'Cyber Matrix',
+        shortLabel: 'Cyber',
+        icon: 'radar',
+        description: 'High-contrast nocturnal vector cartography (Free · No Key)',
+      },
+      satellite: {
+        url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        subdomains: [],
+        maxZoom: 18,
+        label: 'Natural Satellite',
+        shortLabel: 'Natural',
+        icon: 'public',
+        description: 'True photorealistic natural satellite imagery (Free · No Key)',
+      },
+      topo: {
+        url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+        subdomains: [],
+        maxZoom: 18,
+        label: 'Natural Topo',
+        shortLabel: 'Topo',
+        icon: 'terrain',
+        description: 'Crisp terrain elevation contours and mountain ranges (Free · No Key)',
+      },
+    }),
+    [isLightMode]
+  );
 
-  // Focus on active station
-  const focusStation = useCallback((st: Station) => {
-    if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    const targetZoom = Math.max(2.2, zoom);
+  // Accent color hex based on active skin
+  const getSkinColor = useCallback(() => {
+    switch (skinTheme) {
+      case 'emerald':
+        return '#4edea3';
+      case 'cyan':
+        return '#38bdf8';
+      case 'magenta':
+        return '#f43f5e';
+      case 'solar':
+        return '#fb923c';
+      case 'amber':
+      default:
+        return '#ffc174';
+    }
+  }, [skinTheme]);
 
-    const targetX = ((50 - st.mapPosition.x) / 100) * rect.width * (targetZoom / 1.0);
-    const targetY = ((50 - st.mapPosition.y) / 100) * rect.height * (targetZoom / 1.0);
+  const tuneHandlerRef = useRef<(lat: number, lng: number, directPlace?: RadioGardenPlace) => void>(() => {});
 
-    setZoom(targetZoom);
-    setPan({ x: targetX, y: targetY });
-  }, [zoom]);
+  // Handle tuning into a place / coordinates
+  const handleMapPointTune = useCallback(
+    async (lat: number, lng: number, directPlace?: RadioGardenPlace) => {
+      // Notify parent to close any open header modals / menus
+      if (onMapClick) {
+        onMapClick();
+      }
+
+      // Find direct place or nearest among all 12,845 places
+      let targetPlace: RadioGardenPlace | undefined = directPlace;
+      let targetLat = lat;
+      let targetLng = lng;
+      let minDistance = 0;
+
+      if (!targetPlace && allPlaces.length > 0) {
+        let closestDist = Infinity;
+        let closestPlace = allPlaces[0];
+
+        // Search nearest place with bounding box pre-filter
+        for (let i = 0; i < allPlaces.length; i++) {
+          const p = allPlaces[i];
+          const pLat = p.geo[1];
+          const pLng = p.geo[0];
+          if (Math.abs(pLat - lat) < 10 && Math.abs(pLng - lng) < 10) {
+            const dist = haversineDistanceKm(lat, lng, pLat, pLng);
+            if (dist < closestDist) {
+              closestDist = dist;
+              closestPlace = p;
+            }
+          }
+        }
+
+        if (closestDist === Infinity) {
+          for (let i = 0; i < allPlaces.length; i++) {
+            const p = allPlaces[i];
+            const dist = haversineDistanceKm(lat, lng, p.geo[1], p.geo[0]);
+            if (dist < closestDist) {
+              closestDist = dist;
+              closestPlace = p;
+            }
+          }
+        }
+
+        targetPlace = closestPlace;
+        targetLat = targetPlace.geo[1];
+        targetLng = targetPlace.geo[0];
+        minDistance = closestDist;
+      } else if (targetPlace) {
+        targetLat = targetPlace.geo[1];
+        targetLng = targetPlace.geo[0];
+        minDistance = haversineDistanceKm(lat, lng, targetLat, targetLng);
+      }
+
+      if (!targetPlace) return;
+
+      const pingId = Date.now();
+      setActiveRadarPing({
+        id: pingId,
+        lat,
+        lng,
+        targetLat,
+        targetLng,
+        placeTitle: targetPlace.title,
+        distanceKm: minDistance,
+      });
+
+      // Track click-to-tune analytics
+      analytics.trackMapInteraction('click_radar', {
+        lat,
+        lng,
+        targetLat,
+        targetLng,
+        placeTitle: targetPlace.title,
+        distanceKm: minDistance,
+      });
+
+      // Auto-hide ping HUD toast after 4s
+      setTimeout(() => {
+        setActiveRadarPing((current) => (current?.id === pingId ? null : current));
+      }, 4000);
+
+      // Check if place has matching station in current pool
+      const existing =
+        allStations.find((s) => s.placeId === targetPlace?.id || s.city.toLowerCase() === targetPlace?.title.toLowerCase()) ||
+        stations.find((s) => s.city.toLowerCase() === targetPlace?.title.toLowerCase());
+
+      if (existing) {
+        onSelectStation(existing);
+      } else {
+        // Immediate play: synthesize station object right away so audio plays instantly
+        const freq = 88.0 + ((Math.abs(Math.round(targetLng * 10)) % 180) / 10);
+        const instantStation: Station = {
+          id: `place_${targetPlace.id}`,
+          title: `${targetPlace.title} FM`,
+          city: targetPlace.title,
+          country: targetPlace.country,
+          placeId: targetPlace.id,
+          region: radioGardenService.inferRegion(targetPlace.country),
+          geo: targetPlace.geo,
+          coordinates: {
+            lat: targetLat,
+            lng: targetLng,
+            display: `${targetPlace.title} • ${Math.abs(targetLat).toFixed(2)}° ${targetLat >= 0 ? 'N' : 'S'}, ${Math.abs(targetLng).toFixed(2)}° ${targetLng >= 0 ? 'E' : 'W'}`,
+          },
+          mapPosition: { x: 50, y: 50 },
+          frequency: Math.round(freq * 10) / 10,
+          frequencyDisplay: `${freq.toFixed(1)} MHz`,
+          callsign: `${targetPlace.title} FM`,
+          track: `${targetPlace.title} Airwaves`,
+          streamUrl: `/api/radio-garden/stream/place_${targetPlace.id}`,
+          directStreamUrl: '',
+          accentColor: 'primary',
+          bitrate: '128-320 kbps MP3/AAC',
+          source: 'radio.garden',
+        };
+        onSelectStation(instantStation);
+      }
+
+      // Open Channel Navigator Drawer with loading indicator
+      setFanOutCluster({
+        place: targetPlace,
+        stations: existing ? [existing] : [],
+        lat: targetLat,
+        lng: targetLng,
+        isLoading: true,
+      });
+
+      // Fetch all live channels for this place
+      try {
+        const fetched = await radioGardenService.fetchChannelsForPlace(targetPlace);
+        if (fetched.length > 0) {
+          onSelectStation(fetched[0]);
+          setFanOutCluster({
+            place: targetPlace,
+            stations: fetched,
+            lat: targetLat,
+            lng: targetLng,
+            isLoading: false,
+          });
+        } else {
+          setFanOutCluster((prev) => (prev ? { ...prev, isLoading: false } : null));
+        }
+      } catch {
+        setFanOutCluster((prev) => (prev ? { ...prev, isLoading: false } : null));
+      }
+    },
+    [allPlaces, allStations, stations, onSelectStation, onMapClick]
+  );
+
+  useEffect(() => {
+    tuneHandlerRef.current = handleMapPointTune;
+  }, [handleMapPointTune]);
+
+  // Initialize Leaflet Map
+  useEffect(() => {
+    if (!mapContainerRef.current) return;
+    if (mapInstanceRef.current) return;
+
+    const initialLat = activeStation.coordinates?.lat ?? 25;
+    const initialLng = activeStation.coordinates?.lng ?? 0;
+
+    const map = L.map(mapContainerRef.current, {
+      center: [initialLat, initialLng],
+      zoom: 3,
+      minZoom: 2,
+      maxZoom: 18,
+      zoomControl: false,
+      attributionControl: false,
+      worldCopyJump: true,
+      preferCanvas: true,
+    });
+
+    canvasRendererRef.current = L.canvas({ padding: 0.5 });
+
+    // Initial Tile Layer
+    const provider = TILE_PROVIDERS[tileMode];
+    const tileLayer = L.tileLayer(provider.url, {
+      maxZoom: provider.maxZoom,
+      subdomains: provider.subdomains.length > 0 ? provider.subdomains : 'abc',
+      noWrap: false,
+      crossOrigin: true,
+    }).addTo(map);
+
+    tileLayerRef.current = tileLayer;
+
+    // High performance Layer Groups
+    placesCanvasLayerRef.current = L.layerGroup().addTo(map);
+    activeBeaconLayerRef.current = L.layerGroup().addTo(map);
+    skywaveLayerRef.current = L.layerGroup().addTo(map);
+
+    // Map click: tune nearest place and close any open modals
+    map.on('click', (e: L.LeafletMouseEvent) => {
+      tuneHandlerRef.current(e.latlng.lat, e.latlng.lng);
+    });
+
+    mapInstanceRef.current = map;
+
+    return () => {
+      map.remove();
+      mapInstanceRef.current = null;
+    };
+  }, []);
+
+  // Update Tile Layer when tileMode or theme changes
+  useEffect(() => {
+    if (!mapInstanceRef.current) return;
+    const provider = TILE_PROVIDERS[tileMode];
+
+    if (tileLayerRef.current) {
+      mapInstanceRef.current.removeLayer(tileLayerRef.current);
+    }
+
+    const newTileLayer = L.tileLayer(provider.url, {
+      maxZoom: provider.maxZoom,
+      subdomains: provider.subdomains.length > 0 ? provider.subdomains : 'abc',
+      noWrap: false,
+      crossOrigin: true,
+    }).addTo(mapInstanceRef.current);
+
+    tileLayerRef.current = newTileLayer;
+  }, [tileMode, isLightMode, TILE_PROVIDERS]);
+
+  // RENDER ALL 12,845 RADIO GARDEN PLACES (Every single transmitter worldwide!)
+  useEffect(() => {
+    if (!mapInstanceRef.current || !placesCanvasLayerRef.current || !canvasRendererRef.current) return;
+    placesCanvasLayerRef.current.clearLayers();
+
+    if (allPlaces.length === 0) return;
+
+    const renderer = canvasRendererRef.current;
+    const skinColor = getSkinColor();
+
+    allPlaces.forEach((place) => {
+      const pLat = place.geo[1];
+      const pLng = place.geo[0];
+      const count = place.stationCount || 1;
+
+      // Radius scales gracefully with channel density
+      let radius = 2.5;
+      let opacity = 0.55;
+      let weight = 0.8;
+      let fillOpacity = 0.45;
+
+      if (count >= 15) {
+        radius = 6.0;
+        opacity = 0.95;
+        weight = 1.6;
+        fillOpacity = 0.85;
+      } else if (count >= 5) {
+        radius = 4.2;
+        opacity = 0.8;
+        weight = 1.2;
+        fillOpacity = 0.65;
+      } else if (count >= 2) {
+        radius = 3.2;
+        opacity = 0.65;
+        weight = 1.0;
+        fillOpacity = 0.5;
+      }
+
+      const circleMarker = L.circleMarker([pLat, pLng], {
+        renderer,
+        radius,
+        color: skinColor,
+        weight,
+        opacity,
+        fillColor: skinColor,
+        fillOpacity,
+      });
+
+      // Clean, rich hover tooltip
+      circleMarker.bindTooltip(
+        `<div style="font-family: monospace; font-size: 11px; padding: 3px 6px; line-height: 1.3;">
+          <strong style="color: #ffffff;">${place.title}</strong>, ${place.country}<br/>
+          <span style="color: ${skinColor}; font-weight: 600;">📡 ${count} channel${count > 1 ? 's' : ''} live</span>
+          <span style="opacity: 0.5; font-size: 9px; display: block; margin-top: 1px;">Click to tune & browse all</span>
+        </div>`,
+        {
+          direction: 'top',
+          offset: [0, -6],
+          className: 'custom-leaflet-tooltip',
+          opacity: 0.96,
+        }
+      );
+
+      // Marker click: tune and open Channel Navigator!
+      circleMarker.on('click', (e) => {
+        L.DomEvent.stopPropagation(e);
+        tuneHandlerRef.current(pLat, pLng, place);
+      });
+
+      placesCanvasLayerRef.current?.addLayer(circleMarker);
+    });
+  }, [allPlaces, getSkinColor]);
+
+  // REDRAW ACTIVE TRANSMITTER BEACON & SKYWAVE ARC
+  useEffect(() => {
+    if (!mapInstanceRef.current || !activeBeaconLayerRef.current) return;
+    activeBeaconLayerRef.current.clearLayers();
+
+    const skinColor = getSkinColor();
+    const lat = activeStation.coordinates?.lat ?? 25;
+    const lng = activeStation.coordinates?.lng ?? 0;
+
+    // Glowing pulsing active beacon
+    const activeOuterRing = L.circleMarker([lat, lng], {
+      radius: 14,
+      color: skinColor,
+      weight: 1.8,
+      opacity: 0.9,
+      fillColor: skinColor,
+      fillOpacity: 0.2,
+      className: 'active-beacon-pulse',
+    });
+
+    const activeInnerDot = L.circleMarker([lat, lng], {
+      radius: 5,
+      color: '#ffffff',
+      weight: 2,
+      opacity: 1,
+      fillColor: skinColor,
+      fillOpacity: 1,
+    });
+
+    activeBeaconLayerRef.current.addLayer(activeOuterRing);
+    activeBeaconLayerRef.current.addLayer(activeInnerDot);
+
+    // Subtle skywave geodesic carrier wave connecting to Tokyo prime receiver
+    if (skywaveLayerRef.current) {
+      skywaveLayerRef.current.clearLayers();
+      const receiverLat = 35.68;
+      const receiverLng = 139.69;
+
+      // Arc calculation
+      const midLat = (lat + receiverLat) / 2 + 12;
+      const midLng = (lng + receiverLng) / 2;
+
+      const curvePoints: [number, number][] = [
+        [lat, lng],
+        [midLat, midLng],
+        [receiverLat, receiverLng],
+      ];
+
+      const skywaveLine = L.polyline(curvePoints, {
+        color: skinColor,
+        weight: 1.2,
+        opacity: isPlaying ? 0.45 : 0.2,
+        dashArray: '4, 8',
+      });
+
+      skywaveLayerRef.current.addLayer(skywaveLine);
+    }
+  }, [activeStation, isPlaying, getSkinColor]);
+
+  // Map Controls
+  const handleFocusStation = () => {
+    if (!mapInstanceRef.current) return;
+    const lat = activeStation.coordinates?.lat ?? 20;
+    const lng = activeStation.coordinates?.lng ?? 0;
+    mapInstanceRef.current.flyTo([lat, lng], Math.max(6, mapInstanceRef.current.getZoom()), {
+      duration: 1.2,
+      easeLinearity: 0.25,
+    });
+  };
+
+  const handleResetWorldView = () => {
+    if (!mapInstanceRef.current) return;
+    mapInstanceRef.current.flyTo([20, 0], 2.5, { duration: 1.0 });
+  };
 
   const handleZoomIn = () => {
-    setZoom((prev) => Math.min(6.0, Math.round((prev + 0.6) * 10) / 10));
+    mapInstanceRef.current?.zoomIn();
   };
 
   const handleZoomOut = () => {
-    setZoom((prev) => {
-      const next = Math.max(1.0, Math.round((prev - 0.6) * 10) / 10);
-      if (next === 1.0) setPan({ x: 0, y: 0 });
-      return next;
-    });
+    mapInstanceRef.current?.zoomOut();
   };
 
-  const handleResetView = () => {
-    setZoom(1.0);
-    setPan({ x: 0, y: 0 });
-  };
-
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const zoomFactor = e.deltaY < 0 ? 1.2 : 0.83;
-    setZoom((prev) => {
-      const newZoom = Math.min(6.0, Math.max(1.0, prev * zoomFactor));
-      if (newZoom === 1.0) {
-        setPan({ x: 0, y: 0 });
-      } else {
-        setPan((p) => ({
-          x: p.x * zoomFactor * 0.95,
-          y: p.y * zoomFactor * 0.95,
-        }));
+  // Close drawer on Escape
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setFanOutCluster(null);
+        setActiveRadarPing(null);
       }
-      return Math.round(newZoom * 100) / 100;
-    });
-  };
-
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.button !== 0) return;
-    setIsDragging(true);
-    setHasMoved(false);
-    setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
-  };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDragging) return;
-    setHasMoved(true);
-    const newX = e.clientX - dragStart.x;
-    const newY = e.clientY - dragStart.y;
-
-    const maxPanX = (zoom - 1) * 450 + 200;
-    const maxPanY = (zoom - 1) * 250 + 120;
-
-    setPan({
-      x: Math.max(-maxPanX, Math.min(maxPanX, newX)),
-      y: Math.max(-maxPanY, Math.min(maxPanY, newY)),
-    });
-  };
-
-  const handleMouseUp = () => {
-    setIsDragging(false);
-  };
-
-  const touchStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-  const handleTouchStart = (e: React.TouchEvent) => {
-    if (e.touches.length === 1) {
-      touchStartRef.current = {
-        x: e.touches[0].clientX - pan.x,
-        y: e.touches[0].clientY - pan.y,
-      };
-      setIsDragging(true);
-      setHasMoved(false);
-    }
-  };
-
-  const handleTouchMove = (e: React.TouchEvent) => {
-    if (!isDragging || e.touches.length !== 1) return;
-    setHasMoved(true);
-    const newX = e.touches[0].clientX - touchStartRef.current.x;
-    const newY = e.touches[0].clientY - touchStartRef.current.y;
-    setPan({ x: newX, y: newY });
-  };
-
-  const handleTouchEnd = () => {
-    setIsDragging(false);
-  };
-
-  // Sun terminator
-  const now = new Date();
-  const utcHours = now.getUTCHours() + now.getUTCMinutes() / 60;
-  const sunLng = -((utcHours - 12) * 15);
-  const sunX = ((sunLng + 180) / 360) * 1000;
-  const nightCenterX = (sunX + 500) % 1000;
-
-  const beaconScale = 1 / Math.pow(zoom, 0.45);
-
-  const stX = (activeStation.mapPosition.x / 100) * 1000;
-  const stY = (activeStation.mapPosition.y / 100) * 500;
-  const listenerX = 880;
-  const listenerY = 150;
-  const midX = (stX + listenerX) / 2;
-  const midY = Math.min(stY, listenerY) - 55;
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   return (
-    <main
-      className="relative flex-1 w-full h-full flex items-center justify-center z-10 overflow-hidden select-none cursor-grab active:cursor-grabbing"
-      onWheel={handleWheel}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
-    >
-      {/* Zoomable World Map Stage */}
+    <div className="relative flex-1 w-full h-full z-10 overflow-hidden select-none">
+      {/* 1. Leaflet Interactive Map Viewport */}
       <div
-        ref={containerRef}
-        style={{
-          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-          transition: isDragging ? 'none' : 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
-          transformOrigin: 'center center',
-        }}
-        className="relative w-full max-w-[1380px] h-[78%] sm:h-[82%] flex items-center justify-center px-4 sm:px-6 pointer-events-auto"
-      >
-        <svg
-          className="w-full h-full object-contain pointer-events-none select-none opacity-40 dark:opacity-40 transition-opacity duration-1000"
-          preserveAspectRatio="xMidYMid meet"
-          viewBox="0 0 1000 500"
-        >
-          <defs>
-            <radialGradient cx="50%" cy="50%" id="oceanGlow" r="50%">
-              <stop
-                offset="0%"
-                stopColor={isLightMode ? '#cbd5e1' : '#121a28'}
-                stopOpacity={isLightMode ? 0.25 : 0.35}
-              />
-              <stop
-                offset="60%"
-                stopColor={isLightMode ? '#e2e8f0' : '#0b0f17'}
-                stopOpacity={isLightMode ? 0.1 : 0.18}
-              />
-              <stop
-                offset="100%"
-                stopColor={isLightMode ? '#f1f5f9' : '#080b11'}
-                stopOpacity="0"
-              />
-            </radialGradient>
+        ref={mapContainerRef}
+        className="w-full h-full z-0 cursor-crosshair active:cursor-grabbing outline-none"
+      />
 
-            <linearGradient id="twilightGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor={isLightMode ? '#0f172a' : '#080b11'} stopOpacity={isLightMode ? 0.12 : 0.6} />
-              <stop offset="45%" stopColor={isLightMode ? '#0f172a' : '#080b11'} stopOpacity="0.04" />
-              <stop offset="50%" stopColor="#ffc174" stopOpacity="0.06" />
-              <stop offset="55%" stopColor={isLightMode ? '#0f172a' : '#080b11'} stopOpacity="0.04" />
-              <stop offset="100%" stopColor={isLightMode ? '#0f172a' : '#080b11'} stopOpacity={isLightMode ? 0.12 : 0.6} />
-            </linearGradient>
-
-            <linearGradient id="skywaveBeamGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#ffc174" stopOpacity="0.75" />
-              <stop offset="50%" stopColor="#4edea3" stopOpacity="0.5" />
-              <stop offset="100%" stopColor="#8ed5ff" stopOpacity="0.25" />
-            </linearGradient>
-          </defs>
-
-          {/* Ocean Ambient Center Glow */}
-          <circle cx="500" cy="250" fill="url(#oceanGlow)" r="380" />
-
-          {/* Hairline Coordinate Grids */}
-          <g
-            stroke={isLightMode ? '#94a3b8' : '#1e2738'}
-            strokeWidth="0.35"
-            strokeDasharray="2 4"
-            opacity={isLightMode ? 0.5 : 0.4}
-          >
-            <line x1="80" y1="250" x2="920" y2="250" />
-            <line x1="120" y1="160" x2="880" y2="160" />
-            <line x1="120" y1="340" x2="880" y2="340" />
-            <line x1="500" y1="60" x2="500" y2="440" />
-            <line x1="300" y1="80" x2="300" y2="420" />
-            <line x1="700" y1="80" x2="700" y2="420" />
-          </g>
-
-          {/* Continental Silhouettes */}
-          <g
-            className="transition-all duration-700"
-            fill={isLightMode ? '#cbd5e1' : '#131924'}
-            stroke={isLightMode ? '#94a3b8' : '#1d2636'}
-            strokeLinejoin="round"
-            strokeWidth="0.5"
-          >
-            {/* North America */}
-            <polygon points="120,75 165,60 235,70 285,115 265,165 210,185 190,230 150,210 130,165 95,125 90,90" />
-            <polygon points="140,235 160,240 180,280 155,290 135,260" />
-            <polygon points="265,35 310,40 335,75 290,80 265,55" />
-
-            {/* South America */}
-            <polygon points="230,285 285,290 340,340 325,410 290,460 260,450 240,380 215,310" />
-
-            {/* Europe & UK */}
-            <polygon points="460,75 510,65 545,90 525,140 480,150 440,130 445,100" />
-            <polygon points="490,50 520,40 530,70 500,75" />
-            <polygon points="435,75 450,80 440,110 425,95" />
-
-            {/* Africa */}
-            <polygon points="450,175 530,175 570,235 565,300 520,375 470,365 435,280 425,215" />
-            <polygon points="565,330 580,335 575,370 560,360" />
-
-            {/* Eurasia & Asia */}
-            <polygon points="545,80 620,65 740,75 860,115 875,165 825,195 765,175 700,240 640,230 590,205 550,150" />
-            <polygon points="680,220 725,235 710,300 660,270" />
-            <polygon points="760,255 820,265 810,305 770,295" />
-            <polygon points="840,165 865,175 855,230 830,220" />
-
-            {/* Oceania */}
-            <polygon points="780,340 850,330 880,380 840,430 760,410 750,360" />
-            <polygon points="885,410 910,420 895,450 875,440" />
-          </g>
-
-          {/* Solar Night Shadow */}
-          {showDayNight && (
-            <ellipse
-              cx={nightCenterX}
-              cy="250"
-              rx="380"
-              ry="240"
-              fill="url(#twilightGrad)"
-              className="pointer-events-none transition-all duration-1000"
-            />
-          )}
-
-          {/* Ionospheric Skywave Beam */}
-          {showSkywaveBeam && isPlaying && (
-            <g className="transition-all duration-500">
-              <path
-                d={`M ${stX} ${stY} Q ${midX} ${midY} ${listenerX} ${listenerY}`}
-                fill="none"
-                stroke="url(#skywaveBeamGrad)"
-                strokeWidth="1.25"
-                strokeDasharray="3 4"
-                opacity="0.75"
-                className="animate-pulse"
-              />
-              <circle cx={stX} cy={stY} r="3.5" fill="#ffc174" opacity="0.9" />
-              <circle cx={listenerX} cy={listenerY} r="2.5" fill="#4edea3" opacity="0.8" />
-            </g>
-          )}
-        </svg>
-
-        {/* Ambient Radio Garden place nodes */}
-        {showAllNodes &&
-          allPlaces.map((pl) => {
-            const isNearActive =
-              Math.abs(pl.mapPosition.x - activeStation.mapPosition.x) < 2 &&
-              Math.abs(pl.mapPosition.y - activeStation.mapPosition.y) < 2;
-
-            if (isNearActive) return null;
-
-            return (
-              <div
-                key={pl.id}
-                style={{
-                  left: `${pl.mapPosition.x}%`,
-                  top: `${pl.mapPosition.y}%`,
-                  transform: `translate(-50%, -50%) scale(${beaconScale})`,
-                }}
-                className="absolute pointer-events-none z-20 transition-transform duration-300"
-              >
-                <div className={`w-1 h-1 rounded-full ${isLightMode ? 'bg-[#059669]/40' : 'bg-[#4edea3]/35'}`} />
-              </div>
-            );
-          })}
-
-        {/* PRIMARY ACTIVE & FEATURED RADIO GARDEN BEACONS */}
-        {stations.map((st) => {
-          const isActive = st.id === activeStation.id;
-          const isAmber = st.accentColor === 'primary';
-
+      {/* 2. RADICAL MAP SCENE SWITCHER: 1-Click Cyber vs Natural Satellite vs Topo (100% Free · No API Key) */}
+      <div className="absolute top-3.5 left-4 sm:top-5 sm:left-6 z-20 flex items-center gap-1 p-1 rounded-2xl border shadow-2xl backdrop-blur-2xl bg-[#080b11]/85 border-white/15 text-xs font-mono">
+        {(['cyber', 'satellite', 'topo'] as MapTileMode[]).map((mode) => {
+          const isSelected = tileMode === mode;
+          const prov = TILE_PROVIDERS[mode];
           return (
-            <div
-              key={st.id}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (!hasMoved) {
-                  onSelectStation(st);
-                }
+            <button
+              key={mode}
+              onClick={() => {
+                setTileMode(mode);
+                analytics.trackMapInteraction('tile_switch', { tileMode: mode, label: prov.label });
               }}
-              style={{
-                left: `${st.mapPosition.x}%`,
-                top: `${st.mapPosition.y}%`,
-                transform: `translate(-50%, -50%) scale(${beaconScale})`,
-              }}
-              className="station-node absolute cursor-pointer z-30 group p-2.5 focus:outline-none transition-transform duration-300"
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  onSelectStation(st);
-                }
-              }}
-              aria-label={`Tune to ${st.title} in ${st.city}`}
+              title={`${prov.label} — ${prov.description}`}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 active:scale-95 ${
+                isSelected
+                  ? 'bg-white/20 text-white shadow-md font-semibold'
+                  : 'text-white/70 hover:text-white hover:bg-white/10'
+              }`}
             >
-              <div className="relative flex items-center justify-center">
-                {/* Active Concentric Carrier Halo Ripple */}
-                {isActive && (
-                  <>
-                    <div
-                      className={`active-halo absolute w-12 h-12 rounded-full ${
-                        isAmber ? 'bg-[#ffc174]/15' : 'bg-[#4edea3]/15'
-                      } beacon-ripple pointer-events-none`}
-                    />
-                    <div
-                      className={`active-ping absolute w-6 h-6 rounded-full ${
-                        isAmber ? 'bg-[#ffc174]/20' : 'bg-[#4edea3]/20'
-                      } pointer-events-none transition-all`}
-                    />
-                  </>
-                )}
-
-                {/* Central Luminous Carrier Beacon Dot */}
-                <div
-                  className={`node-dot rounded-full transition-all duration-300 ${
-                    isActive
-                      ? isAmber
-                        ? 'w-3 h-3 bg-[#ffc174] shadow-[0_0_16px_rgba(255,193,116,0.9)] scale-110'
-                        : 'w-3 h-3 bg-[#4edea3] shadow-[0_0_16px_rgba(78,222,163,0.9)] scale-110'
-                      : isAmber
-                      ? 'w-2 h-2 bg-[#ffc174]/60 hover:bg-[#ffc174] shadow-[0_0_8px_rgba(255,193,116,0.4)] group-hover:scale-125'
-                      : 'w-2 h-2 bg-[#4edea3]/60 hover:bg-[#4edea3] shadow-[0_0_8px_rgba(78,222,163,0.4)] group-hover:scale-125'
-                  }`}
-                />
-
-                {/* Floating Tooltip Pill */}
-                <div
-                  style={{
-                    transform: `translateX(-50%) scale(${1 / beaconScale})`,
-                  }}
-                  className={`absolute bottom-5 left-1/2 pointer-events-none whitespace-nowrap font-mono text-[10px] tracking-wider px-2.5 py-1 rounded-full border backdrop-blur-md shadow-xl transition-all duration-300 z-50 origin-bottom ${
-                    isLightMode
-                      ? 'bg-white/95 text-slate-800 border-slate-300'
-                      : 'bg-[#080b11]/94 text-[#e2e6f0] border-white/10'
-                  } ${
-                    isActive
-                      ? 'opacity-100 translate-y-0 border-[#ffc174]/40'
-                      : 'opacity-0 group-hover:opacity-100 translate-y-1 group-hover:translate-y-0'
-                  }`}
-                >
-                  <span className="font-semibold">{st.city}</span>
-                  <span className="opacity-30 mx-1">•</span>
-                  <span className={isAmber ? 'text-[#ffc174]' : 'text-[#059669] dark:text-[#4edea3]'}>
-                    {st.frequencyDisplay}
-                  </span>
-                  <span className="opacity-30 mx-1">•</span>
-                  <span className="opacity-75 max-w-[120px] truncate inline-block align-bottom">
-                    {st.title}
-                  </span>
-                </div>
-              </div>
-            </div>
+              <span
+                className="material-symbols-outlined text-[15px]"
+                style={{ color: isSelected ? getSkinColor() : undefined }}
+              >
+                {prov.icon}
+              </span>
+              <span>{prov.shortLabel}</span>
+            </button>
           );
         })}
+
+        <div className="w-[1px] h-4 bg-white/15 mx-1 hidden sm:block" />
+
+        {/* Global Radio Node Counter */}
+        <div className="hidden sm:flex items-center gap-1 px-2 text-[10px] text-white/50 tracking-wider">
+          <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: getSkinColor() }} />
+          <span>12,845 HUBS LIVE</span>
+        </div>
       </div>
 
-      {/* ULTRA-THIN SLENDER ZOOM CONTROLS (BOTTOM RIGHT) */}
-      <div
-        className={`absolute right-5 bottom-20 sm:bottom-24 z-40 flex flex-col items-center gap-1 p-1 rounded-xl border shadow-lg backdrop-blur-md transition-opacity duration-200 opacity-60 hover:opacity-100 ${
-          isLightMode
-            ? 'bg-white/80 border-slate-200 text-slate-700'
-            : 'bg-[#0e131d]/80 border-white/10 text-[#e2e6f0]'
-        }`}
-      >
+      {/* 3. Top Radar Feedback Toast */}
+      {activeRadarPing && (
+        <div className="absolute top-16 left-4 sm:left-6 z-20 flex items-center gap-2.5 px-3.5 py-2 rounded-2xl border shadow-2xl backdrop-blur-2xl animate-in fade-in slide-in-from-top-2 duration-300 bg-[#080b11]/92 border-white/20 text-white text-xs font-mono pointer-events-none">
+          <span className="w-2.5 h-2.5 rounded-full animate-ping" style={{ backgroundColor: getSkinColor() }} />
+          <div className="flex flex-col">
+            <div className="flex items-center gap-1.5 font-semibold">
+              <span className="material-symbols-outlined text-[14px]" style={{ color: getSkinColor() }}>
+                radar
+              </span>
+              <span>TUNED: {activeRadarPing.placeTitle}</span>
+            </div>
+            <span className="text-[10px] opacity-70">
+              Broadcast locked • {activeRadarPing.distanceKm} km from scan point
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* 4. SUPER CHANNEL NAVIGATOR (Non-overlapping Side Drawer) */}
+      {fanOutCluster && (
+        <div className="absolute top-16 sm:top-20 left-4 sm:left-6 bottom-24 sm:bottom-28 z-30 w-[88vw] max-w-sm rounded-3xl border shadow-2xl backdrop-blur-2xl bg-[#090d16]/95 border-white/15 text-[#e2e6f0] p-4 font-mono flex flex-col animate-in fade-in slide-in-from-left-4 duration-200">
+          {/* Header */}
+          <div className="flex items-center justify-between border-b border-white/10 pb-3 mb-3 flex-shrink-0">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="material-symbols-outlined text-[20px]" style={{ color: getSkinColor() }}>
+                hub
+              </span>
+              <div className="flex flex-col min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-semibold text-sm text-white truncate">
+                    {fanOutCluster.place.title}
+                  </span>
+                  <span className="text-[10px] opacity-60">({fanOutCluster.place.country})</span>
+                </div>
+                <span className="text-[10px] opacity-70">
+                  {fanOutCluster.isLoading
+                    ? 'Scanning global carrier frequencies...'
+                    : `${fanOutCluster.stations.length} channel${fanOutCluster.stations.length > 1 ? 's' : ''} on airwaves`}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => handleFocusStation()}
+                title="Focus Location on Globe"
+                className="p-1.5 rounded-xl hover:bg-white/10 transition-colors text-white/70 hover:text-white"
+              >
+                <span className="material-symbols-outlined text-[16px]">my_location</span>
+              </button>
+              <button
+                onClick={() => setFanOutCluster(null)}
+                title="Close Channel Navigator (Esc)"
+                className="p-1.5 rounded-xl hover:bg-white/10 transition-colors text-white/70 hover:text-white"
+              >
+                <span className="material-symbols-outlined text-[16px]">close</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Scrollable Channels List */}
+          <div className="flex-1 overflow-y-auto flex flex-col gap-2 pr-1 scrollbar-thin scrollbar-thumb-white/20">
+            {fanOutCluster.isLoading ? (
+              <div className="flex flex-col items-center justify-center py-12 gap-3 text-xs opacity-75">
+                <span className="material-symbols-outlined text-[22px] animate-spin" style={{ color: getSkinColor() }}>
+                  progress_activity
+                </span>
+                <span>Locking broadcast signal...</span>
+              </div>
+            ) : fanOutCluster.stations.length === 0 ? (
+              <div className="text-center py-8 text-xs opacity-60">
+                No active audio carriers registered for this coordinate.
+              </div>
+            ) : (
+              fanOutCluster.stations.map((st) => {
+                const isSelected = st.id === activeStation.id;
+                return (
+                  <button
+                    key={st.id}
+                    onClick={() => {
+                      onSelectStation(st);
+                      analytics.trackStationTune(st, 'fan_out');
+                    }}
+                    className={`flex items-center justify-between p-2.5 rounded-2xl border text-left transition-all active:scale-[0.98] ${
+                      isSelected
+                        ? 'bg-white/15 border-white/30 text-white shadow-lg'
+                        : 'bg-white/[0.04] border-white/5 hover:bg-white/[0.09] text-white/80 hover:text-white'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span
+                        className={`w-2 h-2 rounded-full flex-shrink-0 ${isSelected && isPlaying ? 'animate-ping' : ''}`}
+                        style={{ backgroundColor: isSelected ? getSkinColor() : 'rgba(255,255,255,0.4)' }}
+                      />
+                      <div className="flex flex-col min-w-0">
+                        <span className="font-semibold text-xs truncate text-white">{st.title}</span>
+                        <div className="flex items-center gap-2 text-[10px] opacity-70">
+                          <span style={{ color: getSkinColor() }}>{st.frequencyDisplay}</span>
+                          <span>·</span>
+                          <span className="truncate">{st.bitrate || '128k MP3'}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-shrink-0 pl-2">
+                      {isSelected && isPlaying && (
+                        <span className="material-symbols-outlined text-[17px] animate-pulse" style={{ color: getSkinColor() }}>
+                          equalizer
+                        </span>
+                      )}
+                      <span
+                        className={`text-[10px] px-2.5 py-0.5 rounded-full font-medium ${
+                          isSelected ? 'bg-white/20 text-white font-semibold' : 'bg-white/5 opacity-75'
+                        }`}
+                      >
+                        {isSelected ? 'Tuned' : 'Listen'}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 5. Minimal Non-Overlapping Globe Navigation Toolbar (Docked Bottom-Right) */}
+      <div className="absolute bottom-6 right-4 sm:bottom-8 sm:right-6 z-20 flex flex-col items-center gap-1.5 p-1 rounded-2xl border shadow-2xl backdrop-blur-2xl bg-[#080b11]/85 border-white/15 text-[#e2e6f0]">
+        {/* Focus Active Station */}
+        <button
+          onClick={handleFocusStation}
+          title="Fly to Playing Station"
+          className="w-8 h-8 rounded-xl hover:bg-white/10 flex items-center justify-center transition-colors active:scale-95 text-white/80 hover:text-white"
+        >
+          <span className="material-symbols-outlined text-[16px]" style={{ color: getSkinColor() }}>
+            my_location
+          </span>
+        </button>
+
+        {/* Reset World Globe */}
+        <button
+          onClick={handleResetWorldView}
+          title="Reset World Globe"
+          className="w-8 h-8 rounded-xl hover:bg-white/10 flex items-center justify-center transition-colors active:scale-95 text-white/80 hover:text-white"
+        >
+          <span className="material-symbols-outlined text-[16px]">public</span>
+        </button>
+
+        <div className="w-4 h-[1px] bg-white/15 my-0.5" />
+
+        {/* Zoom In */}
         <button
           onClick={handleZoomIn}
-          title="Zoom in (+)"
-          className="w-6 h-6 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center transition-colors active:scale-95 text-sm font-semibold"
+          title="Zoom In (+)"
+          className="w-8 h-8 rounded-xl hover:bg-white/10 flex items-center justify-center text-sm font-semibold transition-colors active:scale-95 text-white/80 hover:text-white"
         >
           +
         </button>
 
-        <div className="text-[9px] font-mono opacity-60 tabular-nums">
-          {Math.round(zoom * 100)}%
-        </div>
-
+        {/* Zoom Out */}
         <button
           onClick={handleZoomOut}
-          title="Zoom out (−)"
-          className="w-6 h-6 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center transition-colors active:scale-95 text-sm font-semibold"
+          title="Zoom Out (-)"
+          className="w-8 h-8 rounded-xl hover:bg-white/10 flex items-center justify-center text-sm font-semibold transition-colors active:scale-95 text-white/80 hover:text-white"
         >
-          −
-        </button>
-
-        <button
-          onClick={() => focusStation(activeStation)}
-          title="Center Active Station"
-          className="w-6 h-6 rounded-lg hover:bg-[#ffc174]/20 hover:text-[#ffc174] flex items-center justify-center transition-colors active:scale-95"
-        >
-          <span className="material-symbols-outlined text-[14px]">my_location</span>
-        </button>
-
-        <button
-          onClick={handleResetView}
-          title="Reset to World View"
-          className="w-6 h-6 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center transition-colors active:scale-95"
-        >
-          <span className="material-symbols-outlined text-[14px]">restart_alt</span>
+          -
         </button>
       </div>
-    </main>
+    </div>
   );
 };

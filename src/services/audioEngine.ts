@@ -270,22 +270,52 @@ class RadioAudioEngine {
   private playRealStationStream(station: Station) {
     if (!this.audioElement) return;
 
-    // Use our server proxy with fallback to direct Radio Garden URL for standalone/static hosting
-    const streamSrc = station.streamUrl || station.directStreamUrl || `https://radio.garden/api/ara/content/listen/${station.id}/channel.mp3`;
+    // Ordered list of candidate stream sources to attempt
+    const candidateUrls: string[] = [];
+    if (station.streamUrl) candidateUrls.push(station.streamUrl);
+    if (station.directStreamUrl && station.directStreamUrl !== station.streamUrl) {
+      candidateUrls.push(station.directStreamUrl);
+    }
+    candidateUrls.push(`https://radio.garden/api/ara/content/listen/${station.id}/channel.mp3`);
 
-    this.audioElement.pause();
-    this.audioElement.src = streamSrc;
-    this.audioElement.load();
+    let candidateIndex = 0;
 
-    const playPromise = this.audioElement.play();
-    if (playPromise !== undefined) {
-      playPromise.catch((e) => {
-        console.warn('Real stream play interrupted / falling back to procedural synth:', e);
+    const tryNextCandidate = () => {
+      if (!this.audioElement || !this.isRunning) return;
+
+      if (candidateIndex < candidateUrls.length) {
+        const src = candidateUrls[candidateIndex];
+        candidateIndex++;
+        this.audioElement.pause();
+        this.audioElement.src = src;
+        this.audioElement.load();
+
+        const playPromise = this.audioElement.play();
+        if (playPromise !== undefined) {
+          playPromise.catch((e) => {
+            console.warn(`Stream candidate ${src} failed, trying next fallback:`, e);
+            tryNextCandidate();
+          });
+        }
+      } else {
+        // Fall back gracefully to procedural ambient audio
+        console.warn('All stream candidates exhausted, engaging procedural ambient synthesizer');
+        this.isLiveStreamPlaying = false;
         if (this.musicGain && this.ctx && this.isRunning) {
           this.musicGain.gain.setTargetAtTime(0.85, this.ctx.currentTime, 0.1);
         }
-      });
-    }
+      }
+    };
+
+    // Attach one-time error handler for this stream loading sequence
+    const errorHandler = () => {
+      if (candidateIndex < candidateUrls.length) {
+        tryNextCandidate();
+      }
+    };
+
+    this.audioElement.onerror = errorHandler;
+    tryNextCandidate();
   }
 
   public pause() {

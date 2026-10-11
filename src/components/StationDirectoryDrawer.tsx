@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Station } from '../types/radio';
+import { Station, RadioGardenPlace } from '../types/radio';
 import { searchRadioGardenLive } from '../data/stations';
+import { radioGardenService } from '../services/radioGardenService';
 
 interface StationDirectoryDrawerProps {
   isOpen: boolean;
@@ -21,14 +22,30 @@ export const StationDirectoryDrawer: React.FC<StationDirectoryDrawerProps> = ({
   favorites,
   onToggleFavorite,
 }) => {
+  const [activeTab, setActiveTab] = useState<'stations' | 'places'>('stations');
   const [selectedRegion, setSelectedRegion] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [liveSearchResults, setLiveSearchResults] = useState<Station[]>([]);
   const [isSearchingLive, setIsSearchingLive] = useState<boolean>(false);
+  const [loadingPlaceId, setLoadingPlaceId] = useState<string | null>(null);
 
-  // Perform live search on Radio Garden API when search query is entered
+  // Places search results for Tab 2
+  const [matchedPlaces, setMatchedPlaces] = useState<RadioGardenPlace[]>(() => {
+    return radioGardenService.getAllPlaces().slice(0, 50);
+  });
+
   useEffect(() => {
-    if (!searchQuery.trim() || searchQuery.length < 2) {
+    if (!isOpen) return;
+
+    if (activeTab === 'places') {
+      const places = radioGardenService.searchPlaces(searchQuery, 60);
+      setMatchedPlaces(places);
+    }
+  }, [searchQuery, activeTab, isOpen]);
+
+  // Perform live search on Radio Garden API when search query is entered in stations tab
+  useEffect(() => {
+    if (!searchQuery.trim() || searchQuery.length < 2 || activeTab !== 'stations') {
       setLiveSearchResults([]);
       return;
     }
@@ -41,7 +58,7 @@ export const StationDirectoryDrawer: React.FC<StationDirectoryDrawerProps> = ({
     }, 400);
 
     return () => clearTimeout(timer);
-  }, [searchQuery]);
+  }, [searchQuery, activeTab]);
 
   if (!isOpen) return null;
 
@@ -80,13 +97,25 @@ export const StationDirectoryDrawer: React.FC<StationDirectoryDrawerProps> = ({
 
   const getLocalTime = (lat: number, lng: number) => {
     const now = new Date();
-    // Approximate UTC offset from longitude
     const approxOffsetHours = Math.round(lng / 15);
     const totalMinutes = now.getUTCHours() * 60 + now.getUTCMinutes() + approxOffsetHours * 60;
     const adjustedMinutes = ((totalMinutes % 1440) + 1440) % 1440;
     const hrs = String(Math.floor(adjustedMinutes / 60)).padStart(2, '0');
     const mins = String(Math.floor(adjustedMinutes % 60)).padStart(2, '0');
     return `${hrs}:${mins}`;
+  };
+
+  const handleTunePlace = async (place: RadioGardenPlace) => {
+    setLoadingPlaceId(place.id);
+    try {
+      const chs = await radioGardenService.fetchChannelsForPlace(place);
+      if (chs.length > 0) {
+        onSelectStation(chs[0]);
+        onClose();
+      }
+    } finally {
+      setLoadingPlaceId(null);
+    }
   };
 
   return (
@@ -105,7 +134,7 @@ export const StationDirectoryDrawer: React.FC<StationDirectoryDrawerProps> = ({
                 Radio Garden Airwaves
               </h2>
               <span className="font-mono text-[10px] text-[#4edea3]/80">
-                Live Broadcast Network ({stations.length} Scraped Channels)
+                12,845 Global Cities · 38,000+ Stations
               </span>
             </div>
           </div>
@@ -118,149 +147,191 @@ export const StationDirectoryDrawer: React.FC<StationDirectoryDrawerProps> = ({
           </button>
         </div>
 
-        {/* Search & Filter */}
-        <div className="flex flex-col gap-3 py-4">
-          <div className="relative">
-            <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[18px] text-[#7d8799]">
-              {isSearchingLive ? 'autorenew' : 'search'}
-            </span>
-            <input
-              type="text"
-              placeholder="Search Radio Garden (e.g. Setagaya, KMEL, Berlin, Tokyo)..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-[#121824] border border-white/10 rounded-xl pl-9 pr-8 py-2 text-xs text-[#e2e6f0] placeholder-[#7d8799]/60 focus:outline-none focus:border-[#4edea3]/50 font-body"
-            />
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-[#7d8799] hover:text-[#e2e6f0]"
-              >
-                ✕
-              </button>
-            )}
-          </div>
-
-          {/* Region Tabs */}
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[11px] font-mono no-scrollbar">
-            {regions.map((region) => (
-              <button
-                key={region}
-                onClick={() => setSelectedRegion(region)}
-                className={`px-2.5 py-1 rounded-full whitespace-nowrap transition-colors ${
-                  selectedRegion === region
-                    ? 'bg-[#4edea3]/20 text-[#4edea3] border border-[#4edea3]/40'
-                    : 'bg-white/[0.03] text-[#7d8799] hover:text-[#e2e6f0] border border-white/5'
-                }`}
-              >
-                {region === 'all' ? 'All Continents' : region}
-              </button>
-            ))}
-          </div>
+        {/* Tab Switcher: Curated Stations vs 12k+ Global Cities */}
+        <div className="grid grid-cols-2 gap-1.5 my-3 p-1 rounded-xl bg-white/[0.04] border border-white/5 text-xs font-mono">
+          <button
+            onClick={() => setActiveTab('stations')}
+            className={`py-1.5 rounded-lg transition-all ${
+              activeTab === 'stations'
+                ? 'bg-[#ffc174] text-[#080b11] font-semibold shadow-sm'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            Stations ({stations.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('places')}
+            className={`py-1.5 rounded-lg transition-all ${
+              activeTab === 'places'
+                ? 'bg-[#ffc174] text-[#080b11] font-semibold shadow-sm'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            All Cities (12,845)
+          </button>
         </div>
 
-        {/* Station List */}
-        <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
-          {combinedStations.length === 0 ? (
-            <div className="text-center py-12 text-[#7d8799] font-mono text-xs flex flex-col items-center gap-2">
-              <span className="material-symbols-outlined text-2xl text-[#7d8799]/50">
-                radio
-              </span>
-              <span>No Radio Garden channels found for "{searchQuery}".</span>
-              <span className="text-[11px] text-[#7d8799]/60">Try searching a different city or station callsign.</span>
-            </div>
-          ) : (
-            combinedStations.map((st) => {
-              const isActive = st.id === activeStation.id;
-              const isFav = favorites.includes(st.id);
-              const localTime = getLocalTime(st.coordinates.lat, st.coordinates.lng);
-
-              return (
-                <div
-                  key={st.id}
-                  onClick={() => {
-                    onSelectStation(st);
-                    onClose();
-                  }}
-                  className={`p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col gap-2 group ${
-                    isActive
-                      ? 'bg-[#192130] border-[#4edea3]/50 shadow-[0_0_16px_rgba(78,222,163,0.18)]'
-                      : 'bg-[#121824]/60 hover:bg-[#121824] border-white/5 hover:border-white/15'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 min-w-0 pr-2">
-                      <span
-                        className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                          isActive
-                            ? 'bg-[#4edea3] shadow-[0_0_8px_#4edea3]'
-                            : st.accentColor === 'secondary'
-                            ? 'bg-[#4edea3]/70'
-                            : 'bg-[#ffc174]/70'
-                        }`}
-                      />
-                      <span className="font-semibold text-sm text-[#e2e6f0] truncate">
-                        {st.title}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      <span className="font-mono text-xs text-[#ffc174] font-medium">
-                        {st.frequencyDisplay}
-                      </span>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onToggleFavorite(st.id);
-                        }}
-                        className="text-[#7d8799] hover:text-[#ffc174] p-1 transition-colors"
-                        title="Bookmark station"
-                      >
-                        <span className="material-symbols-outlined text-[16px]">
-                          {isFav ? 'star' : 'star_outline'}
-                        </span>
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between text-xs text-[#7d8799]">
-                    <span className="truncate max-w-[220px] text-[#a5b0c4]">
-                      {st.city}, {st.country}
-                    </span>
-                    <span className="font-mono text-[11px] tabular-nums text-white/50">
-                      {localTime} Local
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-between text-[11px] font-mono text-[#7d8799]/80 pt-1 border-t border-white/5">
-                    <span className="flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#4edea3]/80 inline-block" />
-                      <span>Radio Garden</span>
-                      <span className="text-white/20">·</span>
-                      <span className="truncate max-w-[120px]">{st.bitrate}</span>
-                    </span>
-                    {st.radioGardenUrl && (
-                      <a
-                        href={st.radioGardenUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="text-[#4edea3]/70 hover:text-[#4edea3] hover:underline"
-                      >
-                        view ↗
-                      </a>
-                    )}
-                  </div>
-                </div>
-              );
-            })
+        {/* Search Input */}
+        <div className="relative mb-3">
+          <input
+            type="text"
+            placeholder={
+              activeTab === 'stations'
+                ? 'Search city, station, country, frequency...'
+                : 'Search any of 12,845 global cities or countries...'
+            }
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-[#10141e] border border-white/10 rounded-xl px-4 py-2 text-xs font-mono text-[#e2e6f0] placeholder-[#7d8799]/50 focus:outline-none focus:border-[#4edea3] transition-colors"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-3 top-2.5 text-[#7d8799] hover:text-[#e2e6f0] text-xs"
+            >
+              ✕
+            </button>
           )}
         </div>
 
+        {/* Region Filter Chips (only in Stations tab) */}
+        {activeTab === 'stations' && (
+          <div className="flex gap-1.5 overflow-x-auto pb-3 mb-2 scrollbar-none">
+            {regions.map((reg) => (
+              <button
+                key={reg}
+                onClick={() => setSelectedRegion(reg)}
+                className={`px-2.5 py-1 rounded-full text-[10px] font-mono whitespace-nowrap uppercase tracking-wider transition-all ${
+                  selectedRegion === reg
+                    ? 'bg-[#4edea3]/20 border border-[#4edea3]/60 text-[#4edea3]'
+                    : 'bg-white/5 border border-white/5 text-[#7d8799] hover:text-[#e2e6f0]'
+                }`}
+              >
+                {reg === 'all' ? 'All Regions' : reg}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* TAB 1: STATIONS LIST */}
+        {activeTab === 'stations' && (
+          <div className="flex-1 overflow-y-auto space-y-2 pr-1 font-mono text-xs">
+            {combinedStations.length === 0 ? (
+              <div className="text-center py-12 text-[#7d8799]">
+                <p>No broadcasts found matching query.</p>
+                <p className="text-[10px] mt-1 text-[#ffc174]/70">
+                  Switch to the &quot;All Cities&quot; tab to search across all 12,845 Radio Garden hubs.
+                </p>
+              </div>
+            ) : (
+              combinedStations.map((st) => {
+                const isSelected = activeStation.id === st.id;
+                const isBookmarked = favorites.includes(st.id);
+                const localTime = getLocalTime(st.coordinates.lat, st.coordinates.lng);
+
+                return (
+                  <div
+                    key={st.id}
+                    onClick={() => {
+                      onSelectStation(st);
+                      onClose();
+                    }}
+                    className={`p-3 rounded-xl border transition-all cursor-pointer flex flex-col gap-1.5 ${
+                      isSelected
+                        ? 'bg-[#4edea3]/10 border-[#4edea3]/50 shadow-[0_0_15px_rgba(78,222,163,0.15)]'
+                        : 'bg-[#10141e]/60 border-white/5 hover:border-white/15 hover:bg-[#10141e]'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                            isSelected ? 'bg-[#4edea3] animate-pulse' : 'bg-[#7d8799]/40'
+                          }`}
+                        />
+                        <span className="font-semibold text-[#e2e6f0] truncate">{st.title}</span>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className="text-[10px] text-[#ffc174] font-medium bg-[#ffc174]/10 px-1.5 py-0.5 rounded border border-[#ffc174]/20">
+                          {st.frequencyDisplay}
+                        </span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onToggleFavorite(st.id);
+                          }}
+                          className={`p-1 rounded hover:bg-white/10 transition-colors ${
+                            isBookmarked ? 'text-[#ffc174]' : 'text-[#7d8799] opacity-40 hover:opacity-100'
+                          }`}
+                        >
+                          ★
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between text-[10px] text-[#7d8799]">
+                      <span className="truncate">
+                        {st.city}, {st.country}
+                      </span>
+                      <span className="tabular-nums flex-shrink-0">{localTime} Local</span>
+                    </div>
+
+                    <div className="flex items-center justify-between text-[9px] text-[#7d8799]/70 pt-1 border-t border-white/5">
+                      <span className="truncate max-w-[200px]">{st.callsign}</span>
+                      <span>{st.bitrate}</span>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
+
+        {/* TAB 2: 12,845 GLOBAL CITIES ATLAS */}
+        {activeTab === 'places' && (
+          <div className="flex-1 overflow-y-auto space-y-2 pr-1 font-mono text-xs">
+            <div className="text-[10px] text-[#ffc174] mb-2 px-1 flex items-center justify-between">
+              <span>Showing {matchedPlaces.length} cities</span>
+              <span>12,845 total on Earth</span>
+            </div>
+
+            {matchedPlaces.map((pl) => (
+              <div
+                key={pl.id}
+                onClick={() => handleTunePlace(pl)}
+                className="p-3 rounded-xl border bg-[#10141e]/60 border-white/5 hover:border-[#ffc174]/40 hover:bg-[#ffc174]/10 transition-all cursor-pointer flex items-center justify-between group"
+              >
+                <div className="min-w-0 pr-3">
+                  <div className="font-semibold text-[#e2e6f0] group-hover:text-[#ffc174] truncate text-xs">
+                    {pl.title}
+                  </div>
+                  <div className="text-[10px] text-slate-400 truncate mt-0.5">{pl.country}</div>
+                  <div className="text-[9px] text-slate-500 font-mono mt-0.5">
+                    {Math.abs(pl.geo[1]).toFixed(2)}° {pl.geo[1] >= 0 ? 'N' : 'S'}, {Math.abs(pl.geo[0]).toFixed(2)}° {pl.geo[0] >= 0 ? 'E' : 'W'}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <span className="px-2 py-1 rounded text-[10px] bg-white/10 text-emerald-400 font-mono font-semibold">
+                    {pl.size || 1} {pl.size === 1 ? 'Station' : 'Stations'}
+                  </span>
+                  {loadingPlaceId === pl.id ? (
+                    <span className="w-2.5 h-2.5 rounded-full bg-[#ffc174] animate-ping" />
+                  ) : (
+                    <span className="material-symbols-outlined text-base opacity-40 group-hover:opacity-100 group-hover:text-[#ffc174]">
+                      play_arrow
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Footer */}
-        <div className="pt-4 border-t border-white/10 flex items-center justify-between text-[11px] font-mono text-[#7d8799]">
-          <span>{stations.length} Scraped Radio Garden Channels</span>
-          <span className="text-[#4edea3]">Live Streams Connected</span>
+        <div className="pt-3 border-t border-white/10 flex items-center justify-between text-[9px] font-mono text-[#7d8799]">
+          <span>Synced with Radio Garden Content Engine</span>
+          <span>Static Ready</span>
         </div>
       </div>
     </div>

@@ -43,4 +43,7 @@ export interface RadioGardenPlace {
   geo: [number, number];
   mapPosition: { x: number; y: number };
   stationCount: number;
+  size?: number;
+  url?: string;
+  boost?: boolean;
 }

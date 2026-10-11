@@ -3,23 +3,29 @@ import {
   RADIO_GARDEN_STATIONS,
   FEATURED_STATIONS,
   RADIO_GARDEN_PLACES,
+  RADIO_GARDEN_ALL_PLACES,
 } from './data/stations';
 import { Station } from './types/radio';
 import { audioEngine, EqPreset } from './services/audioEngine';
 import { ambientFx } from './services/ambientFx';
-import { WallpaperId } from './types/wallpaper';
+import { geminiDspService, DspMasterProfile } from './services/geminiDspService';
+import { WallpaperId, SkinThemeId } from './types/wallpaper';
 
 import { TopBar } from './components/TopBar';
 import { WorldMap } from './components/WorldMap';
 import { FloatingPlayerPill } from './components/FloatingPlayerPill';
 import { WallpaperBackdrop } from './components/WallpaperBackdrop';
 import { WallpaperModal } from './components/WallpaperModal';
-import { DXLogbookModal } from './components/DXLogbookModal';
+import { ScreensaverView } from './components/ScreensaverView';
+import { DXLogbookModal, DxLogEntry } from './components/DXLogbookModal';
 import { AudioSettingsModal } from './components/AudioSettingsModal';
 import { OscilloscopeModal } from './components/OscilloscopeModal';
 import { StationDirectoryDrawer } from './components/StationDirectoryDrawer';
 import { QuickSearchModal } from './components/QuickSearchModal';
 import { BookmarksDrawer } from './components/BookmarksDrawer';
+import { AnalyticsModal } from './components/AnalyticsModal';
+import { analytics } from './services/analytics';
+import { getStationAtmosphere } from './utils/stationAtmosphere';
 
 export default function App() {
   const [allStations] = useState<Station[]>(RADIO_GARDEN_STATIONS);
@@ -64,24 +70,113 @@ export default function App() {
     }
   });
 
-  // Modals & Panels state
-  const [isOscilloscopeOpen, setIsOscilloscopeOpen] = useState<boolean>(false);
-  const [isDirectoryOpen, setIsDirectoryOpen] = useState<boolean>(false);
-  const [isQuickSearchOpen, setIsQuickSearchOpen] = useState<boolean>(false);
-  const [isBookmarksOpen, setIsBookmarksOpen] = useState<boolean>(false);
-  const [isWallpapersOpen, setIsWallpapersOpen] = useState<boolean>(false);
-  const [isDxLogbookOpen, setIsDxLogbookOpen] = useState<boolean>(false);
-  const [isAudioSettingsOpen, setIsAudioSettingsOpen] = useState<boolean>(false);
+  const [currentSkin, setCurrentSkin] = useState<SkinThemeId>(() => {
+    try {
+      const saved = localStorage.getItem('radio_atlas_skin') as SkinThemeId;
+      return saved || 'amber';
+    } catch {
+      return 'amber';
+    }
+  });
+
+  const handleSelectSkin = (skin: SkinThemeId) => {
+    setCurrentSkin(skin);
+    try {
+      localStorage.setItem('radio_atlas_skin', skin);
+    } catch {}
+    analytics.trackSkinOrWallpaper(currentWallpaper, skin);
+  };
+
+  // Centralized Active Modal & Dock Management (Mutual Exclusive Architecture)
+  type ActiveModalId =
+    | null
+    | 'directory'
+    | 'search'
+    | 'bookmarks'
+    | 'wallpapers'
+    | 'logbook'
+    | 'audio_settings'
+    | 'analytics'
+    | 'screensaver'
+    | 'oscilloscope';
+
+  const [activeModal, setActiveModal] = useState<ActiveModalId>(null);
   const [isZenMode, setIsZenMode] = useState<boolean>(false);
+
+  const toggleModal = useCallback((id: ActiveModalId) => {
+    setActiveModal((prev) => (prev === id ? null : id));
+  }, []);
+
+  const closeAllOverlays = useCallback(() => {
+    setActiveModal(null);
+  }, []);
+
+  // Close overlays on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        closeAllOverlays();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [closeAllOverlays]);
 
   // DSP & Atmosphere state
   const [activeEqPreset, setActiveEqPreset] = useState<EqPreset>('tube');
   const [isRainActive, setIsRainActive] = useState<boolean>(false);
   const [isVinylActive, setIsVinylActive] = useState<boolean>(false);
   const [isCosmicActive, setIsCosmicActive] = useState<boolean>(false);
+  const [isPhotoEnabled, setIsPhotoEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('radio_atlas_photo');
+      return saved !== 'false';
+    } catch {
+      return true;
+    }
+  });
+
+  const handleTogglePhoto = () => {
+    setIsPhotoEnabled((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('radio_atlas_photo', String(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  // Gemini AI DSP Auto-Master state
+  const [isAiDspEnabled, setIsAiDspEnabled] = useState<boolean>(() => geminiDspService.isEnabled());
+  const [dspProfile, setDspProfile] = useState<DspMasterProfile | null>(null);
+  const [showAiDspToast, setShowAiDspToast] = useState<boolean>(false);
+
+  const handleTriggerAiDsp = useCallback((targetStation?: Station) => {
+    const st = targetStation || activeStation;
+    geminiDspService.autoMasterStation(st).then((prof) => {
+      setDspProfile(prof);
+      setActiveEqPreset(prof.eqPreset);
+      setShowAiDspToast(true);
+      setTimeout(() => setShowAiDspToast(false), 4500);
+    });
+  }, [activeStation]);
+
+  const handleToggleAiDsp = () => {
+    setIsAiDspEnabled((prev) => {
+      const next = !prev;
+      geminiDspService.setEnabled(next);
+      if (next) {
+        handleTriggerAiDsp();
+      }
+      return next;
+    });
+  };
 
   // Sleep timer state
   const [sleepMinutesLeft, setSleepMinutesLeft] = useState<number | null>(null);
+
+  // DX Quick Log feedback state
+  const [hasJustLogged, setHasJustLogged] = useState<boolean>(false);
 
   // Bookmarks / Presets
   const [favorites, setFavorites] = useState<string[]>(() => {
@@ -165,11 +260,23 @@ export default function App() {
         return prev;
       });
 
-      if (isPlaying) {
-        audioEngine.tuneFrequency(station.frequency, station.frequency, station);
+      // Clicking on station point should immediately play the station live
+      audioEngine.play(station, station.frequency).then(() => {
+        setIsPlaying(true);
+      }).catch((e) => {
+        console.warn('Playback error:', e);
+      });
+
+      if (isAiDspEnabled) {
+        handleTriggerAiDsp(station);
       }
+
+      // Close open modals so user immediately returns to map/music
+      setActiveModal(null);
+
+      analytics.trackStationTune(station, 'preset');
     },
-    [isPlaying]
+    [isAiDspEnabled, handleTriggerAiDsp]
   );
 
   // Toggle play/pause
@@ -177,9 +284,11 @@ export default function App() {
     if (isPlaying) {
       audioEngine.pause();
       setIsPlaying(false);
+      analytics.trackPlayback('pause', { station_id: activeStation.id, title: activeStation.title });
     } else {
       await audioEngine.play(activeStation, currentFrequency);
       setIsPlaying(true);
+      analytics.trackPlayback('play', { station_id: activeStation.id, title: activeStation.title });
     }
   };
 
@@ -191,6 +300,7 @@ export default function App() {
 
   const handleVolumeChange = (newVol: number) => {
     setVolume(newVol);
+    analytics.trackPlayback('volume_change', { volume: newVol });
     if (isMuted && newVol > 0) {
       setIsMuted(false);
       audioEngine.setMute(false);
@@ -257,9 +367,53 @@ export default function App() {
     }
   };
 
+  // Cycle DSP EQ preset
+  const handleCycleEqPreset = () => {
+    const order: EqPreset[] = ['tube', 'lofi', 'deepbass', 'clean'];
+    const nextIdx = (order.indexOf(activeEqPreset) + 1) % order.length;
+    const nextPreset = order[nextIdx];
+    setActiveEqPreset(nextPreset);
+    audioEngine.setEqPreset(nextPreset);
+  };
+
   const handleSelectEqPreset = (preset: EqPreset) => {
     setActiveEqPreset(preset);
     audioEngine.setEqPreset(preset);
+  };
+
+  // Quick 1-click DX Log
+  const handleQuickLogDx = () => {
+    const now = new Date();
+    const hrs = String(now.getUTCHours()).padStart(2, '0');
+    const mins = String(now.getUTCMinutes()).padStart(2, '0');
+
+    try {
+      const saved = localStorage.getItem('radio_atlas_dx_logs');
+      const existing: DxLogEntry[] = saved ? JSON.parse(saved) : [];
+
+      const newEntry: DxLogEntry = {
+        id: Date.now().toString(),
+        stationId: activeStation.id,
+        stationTitle: activeStation.title,
+        city: activeStation.city,
+        country: activeStation.country,
+        frequencyDisplay: activeStation.frequencyDisplay,
+        timestamp: now.toISOString(),
+        utcTime: `${hrs}:${mins} UTC`,
+        distanceKm: Math.round(
+          Math.hypot(
+            (activeStation.coordinates?.lat ?? 0) - 35.68,
+            (activeStation.coordinates?.lng ?? 0) - 139.69
+          ) * 111
+        ),
+        snr: `${(44 + Math.random() * 6).toFixed(1)} dB`,
+        notes: `Quick intercepted carrier at ${activeStation.frequencyDisplay}.`,
+      };
+
+      localStorage.setItem('radio_atlas_dx_logs', JSON.stringify([newEntry, ...existing]));
+      setHasJustLogged(true);
+      setTimeout(() => setHasJustLogged(false), 2000);
+    } catch {}
   };
 
   // Sleep timer interval
@@ -289,19 +443,19 @@ export default function App() {
 
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
-        setIsQuickSearchOpen((prev) => !prev);
+        toggleModal('search');
       } else if (e.key === '/') {
         e.preventDefault();
-        setIsQuickSearchOpen(true);
+        toggleModal('search');
       } else if (e.code === 'Space') {
         e.preventDefault();
         handleTogglePlay();
       } else if (e.key === 'd' || e.key === 'D') {
         handleDrift();
       } else if (e.key === 'b' || e.key === 'B') {
-        setIsBookmarksOpen((prev) => !prev);
+        toggleModal('bookmarks');
       } else if (e.key === 'l' || e.key === 'L') {
-        setIsDxLogbookOpen((prev) => !prev);
+        toggleModal('logbook');
       } else if (e.key === 'z' || e.key === 'Z') {
         setIsZenMode((prev) => !prev);
       } else if (e.key === 't' || e.key === 'T') {
@@ -309,7 +463,7 @@ export default function App() {
       } else if (e.key === 'm' || e.key === 'M') {
         handleToggleMute();
       } else if (e.key === 'o' || e.key === 'O') {
-        setIsOscilloscopeOpen((prev) => !prev);
+        toggleModal('oscilloscope');
       } else if (['1', '2', '3', '4', '5', '6'].includes(e.key)) {
         const presetIndex = parseInt(e.key, 10) - 1;
         const bookmarked = allStations.filter((s) => favorites.includes(s.id));
@@ -337,43 +491,67 @@ export default function App() {
         isLightMode ? 'bg-[#f4f5f8] text-slate-800' : 'bg-[#080b11] text-[#e2e6f0]'
       }`}
     >
-      {/* PROCEDURAL WALLPAPER BACKDROP */}
+      {/* CHANNEL-REACTIVE ATMOSPHERIC BACKDROP (Changes color & photo on every channel change!) */}
       <WallpaperBackdrop
         wallpaper={currentWallpaper}
         isLightMode={isLightMode}
+        activeStation={activeStation}
+        isPhotoEnabled={isPhotoEnabled}
       />
 
-      {/* TOP BAR */}
+      {/* MINIMAL TOP BAR */}
       <TopBar
         activeStation={activeStation}
         onDrift={handleDrift}
-        onOpenDirectory={() => setIsDirectoryOpen(true)}
-        onOpenQuickSearch={() => setIsQuickSearchOpen(true)}
-        onOpenBookmarks={() => setIsBookmarksOpen(true)}
-        onOpenWallpapers={() => setIsWallpapersOpen(true)}
-        onOpenDxLogbook={() => setIsDxLogbookOpen(true)}
-        onOpenAudioSettings={() => setIsAudioSettingsOpen(true)}
+        onOpenDirectory={() => toggleModal('directory')}
+        onOpenQuickSearch={() => toggleModal('search')}
+        onOpenBookmarks={() => toggleModal('bookmarks')}
+        onOpenWallpapers={() => toggleModal('wallpapers')}
+        onOpenDxLogbook={() => toggleModal('logbook')}
+        onOpenAudioSettings={() => toggleModal('audio_settings')}
         bookmarksCount={favorites.length}
-        onToggleOscilloscope={() => setIsOscilloscopeOpen((prev) => !prev)}
-        isOscilloscopeOpen={isOscilloscopeOpen}
+        onToggleOscilloscope={() => toggleModal('oscilloscope')}
+        isOscilloscopeOpen={activeModal === 'oscilloscope'}
         isPlaying={isPlaying}
         isLightMode={isLightMode}
         onToggleTheme={toggleTheme}
         isZenMode={isZenMode}
         onToggleZenMode={() => setIsZenMode((prev) => !prev)}
+        onOpenAnalytics={() => toggleModal('analytics')}
+        onOpenScreensaver={() => toggleModal('screensaver')}
+        activeModal={activeModal}
       />
 
-      {/* ZOOMABLE CARTOGRAPHY WORLD MAP WITH SKYWAVE BEAMS */}
+      {/* GEMINI AI DSP AUTO-MASTER HUD TOAST */}
+      {showAiDspToast && dspProfile && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-3.5 py-1.5 rounded-full border shadow-2xl backdrop-blur-xl animate-in fade-in slide-in-from-top-2 duration-300 bg-purple-950/85 border-purple-500/40 text-purple-200 text-xs font-mono select-none pointer-events-none">
+          <span className="material-symbols-outlined text-[15px] text-[#ffc174] animate-pulse">
+            psychology
+          </span>
+          <span className="font-semibold text-[#ffc174] uppercase text-[10px]">
+            AI Master: {dspProfile.eqPreset}
+          </span>
+          <span className="opacity-40">·</span>
+          <span className="truncate max-w-[280px] sm:max-w-md text-[10px] opacity-90">
+            {dspProfile.rationale}
+          </span>
+        </div>
+      )}
+
+      {/* ZOOMABLE CARTOGRAPHY WORLD MAP (All 12,845 Places, Zero-Key Cyber & Natural Tiles) */}
       <WorldMap
         stations={featuredStations}
-        allPlaces={RADIO_GARDEN_PLACES}
+        allStations={allStations}
+        allPlaces={RADIO_GARDEN_ALL_PLACES}
         activeStation={activeStation}
         onSelectStation={handleSelectStation}
         isPlaying={isPlaying}
         isLightMode={isLightMode}
+        skinTheme={currentSkin}
+        onMapClick={closeAllOverlays}
       />
 
-      {/* ZEN FLOATING PLAYER PILL */}
+      {/* BOTTOM FLOATING PLAYER PILL WITH INTEGRATED PRESETS */}
       {!isZenMode && (
         <FloatingPlayerPill
           activeStation={activeStation}
@@ -386,6 +564,9 @@ export default function App() {
           onVolumeChange={handleVolumeChange}
           onScrubFrequency={handleScrubFrequency}
           stations={featuredStations}
+          allStations={allStations}
+          favorites={favorites}
+          onSelectStation={handleSelectStation}
           isBookmarked={favorites.includes(activeStation.id)}
           onToggleBookmark={() => toggleFavorite(activeStation.id)}
           isRainActive={isRainActive}
@@ -395,24 +576,38 @@ export default function App() {
           sleepMinutesLeft={sleepMinutesLeft}
           onSetSleepTimer={(mins) => setSleepMinutesLeft(mins)}
           isLightMode={isLightMode}
-          onOpenAudioSettings={() => setIsAudioSettingsOpen(true)}
+          onOpenAudioSettings={() => toggleModal('audio_settings')}
+          onOpenBookmarks={() => toggleModal('bookmarks')}
         />
       )}
 
-      {/* WALLPAPERS & THEMES MODAL */}
+      {/* WALLPAPERS & SKINS MODAL */}
       <WallpaperModal
-        isOpen={isWallpapersOpen}
-        onClose={() => setIsWallpapersOpen(false)}
+        isOpen={activeModal === 'wallpapers'}
+        onClose={() => setActiveModal(null)}
         currentWallpaper={currentWallpaper}
         onSelectWallpaper={handleSelectWallpaper}
+        currentSkin={currentSkin}
+        onSelectSkin={handleSelectSkin}
         isLightMode={isLightMode}
         onToggleTheme={toggleTheme}
+        onLaunchScreensaver={() => toggleModal('screensaver')}
+      />
+
+      {/* POLISHED DESKTOP WALLPAPER / SCREENSAVER VIEW */}
+      <ScreensaverView
+        isOpen={activeModal === 'screensaver'}
+        onClose={() => setActiveModal(null)}
+        activeStation={activeStation}
+        isPlaying={isPlaying}
+        isLightMode={isLightMode}
+        skinTheme={currentSkin}
       />
 
       {/* DX LOGBOOK MODAL */}
       <DXLogbookModal
-        isOpen={isDxLogbookOpen}
-        onClose={() => setIsDxLogbookOpen(false)}
+        isOpen={activeModal === 'logbook'}
+        onClose={() => setActiveModal(null)}
         activeStation={activeStation}
         onSelectStation={handleSelectStation}
         stations={allStations}
@@ -420,8 +615,8 @@ export default function App() {
 
       {/* DSP AUDIO HARDWARE SETTINGS MODAL */}
       <AudioSettingsModal
-        isOpen={isAudioSettingsOpen}
-        onClose={() => setIsAudioSettingsOpen(false)}
+        isOpen={activeModal === 'audio_settings'}
+        onClose={() => setActiveModal(null)}
         activeEqPreset={activeEqPreset}
         onSelectEqPreset={handleSelectEqPreset}
         isRainActive={isRainActive}
@@ -436,8 +631,8 @@ export default function App() {
 
       {/* QUICK SEARCH PALETTE (CMD+K / /) */}
       <QuickSearchModal
-        isOpen={isQuickSearchOpen}
-        onClose={() => setIsQuickSearchOpen(false)}
+        isOpen={activeModal === 'search'}
+        onClose={() => setActiveModal(null)}
         stations={allStations}
         activeStation={activeStation}
         onSelectStation={handleSelectStation}
@@ -447,8 +642,8 @@ export default function App() {
 
       {/* PRESETS & BOOKMARKS DRAWER */}
       <BookmarksDrawer
-        isOpen={isBookmarksOpen}
-        onClose={() => setIsBookmarksOpen(false)}
+        isOpen={activeModal === 'bookmarks'}
+        onClose={() => setActiveModal(null)}
         stations={allStations}
         favorites={favorites}
         activeStation={activeStation}
@@ -458,8 +653,8 @@ export default function App() {
 
       {/* CRT SIGNAL OSCILLOSCOPE MODAL */}
       <OscilloscopeModal
-        isOpen={isOscilloscopeOpen}
-        onClose={() => setIsOscilloscopeOpen(false)}
+        isOpen={activeModal === 'oscilloscope'}
+        onClose={() => setActiveModal(null)}
         activeStation={activeStation}
         currentFrequency={currentFrequency}
         isPlaying={isPlaying}
@@ -467,13 +662,20 @@ export default function App() {
 
       {/* RADIO GARDEN DIRECTORY DRAWER */}
       <StationDirectoryDrawer
-        isOpen={isDirectoryOpen}
-        onClose={() => setIsDirectoryOpen(false)}
+        isOpen={activeModal === 'directory'}
+        onClose={() => setActiveModal(null)}
         stations={allStations}
         activeStation={activeStation}
         onSelectStation={handleSelectStation}
         favorites={favorites}
         onToggleFavorite={toggleFavorite}
+      />
+
+      {/* GOOGLE ANALYTICS 4 LIVE TELEMETRY MODAL */}
+      <AnalyticsModal
+        isOpen={activeModal === 'analytics'}
+        onClose={() => setActiveModal(null)}
+        isLightMode={isLightMode}
       />
     </div>
   );

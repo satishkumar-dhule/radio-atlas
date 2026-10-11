@@ -1,0 +1,42 @@
+name: Radio Garden Sync & Catalog Maintenance
+
+on:
+  schedule:
+    # Run maintenance scrape every Sunday at 03:00 UTC
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  scrape-and-update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run Radio Garden Scraper & Data Optimizer
+        run: npm run scrape
+
+      - name: Commit and push updated radio catalog
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          if [[ -n $(git status -s src/data) ]]; then
+            git add src/data
+            git commit -m "chore(data): sync latest Radio Garden global stations & places"
+            git push
+            echo "Updated station data committed and pushed."
+          else
+            echo "No data changes detected. Radio catalog is already up to date."
+          fi
