@@ -5,11 +5,17 @@ import {
   RADIO_GARDEN_PLACES,
 } from './data/stations';
 import { Station } from './types/radio';
-import { audioEngine } from './services/audioEngine';
+import { audioEngine, EqPreset } from './services/audioEngine';
 import { ambientFx } from './services/ambientFx';
+import { WallpaperId } from './types/wallpaper';
+
 import { TopBar } from './components/TopBar';
 import { WorldMap } from './components/WorldMap';
 import { FloatingPlayerPill } from './components/FloatingPlayerPill';
+import { WallpaperBackdrop } from './components/WallpaperBackdrop';
+import { WallpaperModal } from './components/WallpaperModal';
+import { DXLogbookModal } from './components/DXLogbookModal';
+import { AudioSettingsModal } from './components/AudioSettingsModal';
 import { OscilloscopeModal } from './components/OscilloscopeModal';
 import { StationDirectoryDrawer } from './components/StationDirectoryDrawer';
 import { QuickSearchModal } from './components/QuickSearchModal';
@@ -18,25 +24,61 @@ import { BookmarksDrawer } from './components/BookmarksDrawer';
 export default function App() {
   const [allStations] = useState<Station[]>(RADIO_GARDEN_STATIONS);
   const [featuredStations, setFeaturedStations] = useState<Station[]>(FEATURED_STATIONS);
-  const [activeStation, setActiveStation] = useState<Station>(
-    FEATURED_STATIONS[0] || RADIO_GARDEN_STATIONS[0]
-  );
-  const [currentFrequency, setCurrentFrequency] = useState<number>(
-    FEATURED_STATIONS[0]?.frequency || 83.40
-  );
+
+  // Read initial station from URL hash or default
+  const getInitialStation = () => {
+    try {
+      const hash = window.location.hash;
+      if (hash.includes('station=')) {
+        const id = hash.replace('#station=', '');
+        const matched = RADIO_GARDEN_STATIONS.find((s) => s.id === id);
+        if (matched) return matched;
+      }
+    } catch {
+      // ignore
+    }
+    return FEATURED_STATIONS[0] || RADIO_GARDEN_STATIONS[0];
+  };
+
+  const [activeStation, setActiveStation] = useState<Station>(getInitialStation);
+  const [currentFrequency, setCurrentFrequency] = useState<number>(activeStation.frequency);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [volume, setVolume] = useState<number>(0.75);
 
-  // Modals & Drawers state
+  // Theme & Wallpaper state
+  const [isLightMode, setIsLightMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('radio_atlas_theme') === 'light';
+    } catch {
+      return false;
+    }
+  });
+
+  const [currentWallpaper, setCurrentWallpaper] = useState<WallpaperId>(() => {
+    try {
+      const saved = localStorage.getItem('radio_atlas_wallpaper') as WallpaperId;
+      return saved || 'obsidian';
+    } catch {
+      return 'obsidian';
+    }
+  });
+
+  // Modals & Panels state
   const [isOscilloscopeOpen, setIsOscilloscopeOpen] = useState<boolean>(false);
   const [isDirectoryOpen, setIsDirectoryOpen] = useState<boolean>(false);
   const [isQuickSearchOpen, setIsQuickSearchOpen] = useState<boolean>(false);
   const [isBookmarksOpen, setIsBookmarksOpen] = useState<boolean>(false);
+  const [isWallpapersOpen, setIsWallpapersOpen] = useState<boolean>(false);
+  const [isDxLogbookOpen, setIsDxLogbookOpen] = useState<boolean>(false);
+  const [isAudioSettingsOpen, setIsAudioSettingsOpen] = useState<boolean>(false);
+  const [isZenMode, setIsZenMode] = useState<boolean>(false);
 
-  // Atmosphere FX state
+  // DSP & Atmosphere state
+  const [activeEqPreset, setActiveEqPreset] = useState<EqPreset>('tube');
   const [isRainActive, setIsRainActive] = useState<boolean>(false);
   const [isVinylActive, setIsVinylActive] = useState<boolean>(false);
+  const [isCosmicActive, setIsCosmicActive] = useState<boolean>(false);
 
   // Sleep timer state
   const [sleepMinutesLeft, setSleepMinutesLeft] = useState<number | null>(null);
@@ -51,14 +93,55 @@ export default function App() {
     }
   });
 
+  // Sync theme class on <html> element
+  useEffect(() => {
+    if (isLightMode) {
+      document.documentElement.classList.remove('dark');
+      try {
+        localStorage.setItem('radio_atlas_theme', 'light');
+      } catch {}
+    } else {
+      document.documentElement.classList.add('dark');
+      try {
+        localStorage.setItem('radio_atlas_theme', 'dark');
+      } catch {}
+    }
+  }, [isLightMode]);
+
+  // Sync wallpaper in localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('radio_atlas_wallpaper', currentWallpaper);
+    } catch {}
+  }, [currentWallpaper]);
+
+  const toggleTheme = () => {
+    setIsLightMode((prev) => {
+      const next = !prev;
+      if (next && (currentWallpaper === 'obsidian' || currentWallpaper === 'constellations')) {
+        setCurrentWallpaper('blueprint');
+      } else if (!next && (currentWallpaper === 'blueprint' || currentWallpaper === 'solar_dawn')) {
+        setCurrentWallpaper('obsidian');
+      }
+      return next;
+    });
+  };
+
+  const handleSelectWallpaper = (id: WallpaperId) => {
+    setCurrentWallpaper(id);
+    if (id === 'blueprint' || id === 'solar_dawn') {
+      setIsLightMode(true);
+    } else {
+      setIsLightMode(false);
+    }
+  };
+
   const toggleFavorite = (id: string) => {
     setFavorites((prev) => {
       const updated = prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id];
       try {
         localStorage.setItem('radio_atlas_favorites', JSON.stringify(updated));
-      } catch {
-        // ignore
-      }
+      } catch {}
       return updated;
     });
   };
@@ -69,7 +152,12 @@ export default function App() {
       setActiveStation(station);
       setCurrentFrequency(station.frequency);
 
-      // Ensure the selected station is visible in featured map stations
+      // Update URL hash for permalink sharing
+      try {
+        window.history.replaceState(null, '', `#station=${station.id}`);
+      } catch {}
+
+      // Ensure station is in featured list
       setFeaturedStations((prev) => {
         if (!prev.some((s) => s.id === station.id)) {
           return [station, ...prev.slice(0, 24)];
@@ -95,14 +183,12 @@ export default function App() {
     }
   };
 
-  // Toggle mute
   const handleToggleMute = () => {
     const nextMuted = !isMuted;
     setIsMuted(nextMuted);
     audioEngine.setMute(nextMuted);
   };
 
-  // Volume change
   const handleVolumeChange = (newVol: number) => {
     setVolume(newVol);
     if (isMuted && newVol > 0) {
@@ -112,11 +198,9 @@ export default function App() {
     audioEngine.setVolume(newVol);
   };
 
-  // Continuous frequency scrubbing
   const handleScrubFrequency = (freq: number) => {
     setCurrentFrequency(freq);
 
-    // Look for matching station nearby in our Radio Garden database
     const nearest = allStations.find((st) => Math.abs(st.frequency - freq) <= 0.25);
     if (nearest && nearest.id !== activeStation.id) {
       setActiveStation(nearest);
@@ -137,7 +221,6 @@ export default function App() {
     }
   };
 
-  // Drift mode: pick a random station from all Radio Garden stations
   const handleDrift = () => {
     const others = allStations.filter((st) => st.id !== activeStation.id);
     const randomStation = others[Math.floor(Math.random() * others.length)] || allStations[0];
@@ -149,21 +232,34 @@ export default function App() {
     }
   };
 
-  // Atmosphere FX toggles
+  // Atmosphere Soundscapes
   const handleToggleRain = () => {
-    if (!isPlaying) {
-      audioEngine.init();
+    const ctx = audioEngine.getAudioContext();
+    if (ctx) {
+      const next = ambientFx.toggleRain(ctx);
+      setIsRainActive(next);
     }
-    const next = ambientFx.toggleRain();
-    setIsRainActive(next);
   };
 
   const handleToggleVinyl = () => {
-    if (!isPlaying) {
-      audioEngine.init();
+    const ctx = audioEngine.getAudioContext();
+    if (ctx) {
+      const next = ambientFx.toggleVinyl(ctx);
+      setIsVinylActive(next);
     }
-    const next = ambientFx.toggleVinyl();
-    setIsVinylActive(next);
+  };
+
+  const handleToggleCosmic = () => {
+    const ctx = audioEngine.getAudioContext();
+    if (ctx) {
+      const next = ambientFx.toggleCosmic(ctx);
+      setIsCosmicActive(next);
+    }
+  };
+
+  const handleSelectEqPreset = (preset: EqPreset) => {
+    setActiveEqPreset(preset);
+    audioEngine.setEqPreset(preset);
   };
 
   // Sleep timer interval
@@ -173,26 +269,24 @@ export default function App() {
     const interval = setInterval(() => {
       setSleepMinutesLeft((prev) => {
         if (!prev || prev <= 1) {
-          // Timer expired: stop broadcast
           audioEngine.pause();
           setIsPlaying(false);
           return null;
         }
         return prev - 1;
       });
-    }, 60000); // every minute
+    }, 60000);
 
     return () => clearInterval(interval);
   }, [sleepMinutesLeft]);
 
-  // Global Keyboard Shortcuts (Cmd+K for search, 1-6 for presets, Space for play)
+  // Global Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
         return;
       }
 
-      // Cmd+K or Ctrl+K or '/' -> Quick Search
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
         setIsQuickSearchOpen((prev) => !prev);
@@ -206,12 +300,17 @@ export default function App() {
         handleDrift();
       } else if (e.key === 'b' || e.key === 'B') {
         setIsBookmarksOpen((prev) => !prev);
+      } else if (e.key === 'l' || e.key === 'L') {
+        setIsDxLogbookOpen((prev) => !prev);
+      } else if (e.key === 'z' || e.key === 'Z') {
+        setIsZenMode((prev) => !prev);
+      } else if (e.key === 't' || e.key === 'T') {
+        toggleTheme();
       } else if (e.key === 'm' || e.key === 'M') {
         handleToggleMute();
       } else if (e.key === 'o' || e.key === 'O') {
         setIsOscilloscopeOpen((prev) => !prev);
       } else if (['1', '2', '3', '4', '5', '6'].includes(e.key)) {
-        // Quick preset tuning
         const presetIndex = parseInt(e.key, 10) - 1;
         const bookmarked = allStations.filter((s) => favorites.includes(s.id));
         if (bookmarked[presetIndex]) {
@@ -233,55 +332,104 @@ export default function App() {
   }, [isPlaying, currentFrequency, activeStation, allStations, favorites, handleSelectStation]);
 
   return (
-    <div className="bg-[#080b11] text-[#e2e6f0] font-body select-none w-screen h-screen relative flex flex-col justify-between overflow-hidden antialiased">
-      {/* ETHEREAL ATMOSPHERIC BACKDROP & SUBTLE NIGHT HAZE */}
-      <div className="absolute inset-0 pointer-events-none z-0">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_70%_55%_at_50%_45%,rgba(255,193,116,0.038),transparent_75%)]" />
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_55%_45%_at_78%_38%,rgba(78,222,163,0.028),transparent_65%)]" />
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_40%_35%_at_25%_65%,rgba(142,213,255,0.02),transparent_70%)]" />
-        <div className="absolute inset-0 bg-gradient-to-b from-[#080b11]/80 via-transparent to-[#080b11]/90" />
-      </div>
+    <div
+      className={`font-body select-none w-screen h-screen relative flex flex-col justify-between overflow-hidden antialiased transition-colors duration-500 ${
+        isLightMode ? 'bg-[#f4f5f8] text-slate-800' : 'bg-[#080b11] text-[#e2e6f0]'
+      }`}
+    >
+      {/* PROCEDURAL WALLPAPER BACKDROP */}
+      <WallpaperBackdrop
+        wallpaper={currentWallpaper}
+        isLightMode={isLightMode}
+      />
 
-      {/* TOP BAR WITH QUICK SEARCH, PRESETS, SCOPE, DRIFT */}
+      {/* TOP BAR */}
       <TopBar
         activeStation={activeStation}
         onDrift={handleDrift}
         onOpenDirectory={() => setIsDirectoryOpen(true)}
         onOpenQuickSearch={() => setIsQuickSearchOpen(true)}
         onOpenBookmarks={() => setIsBookmarksOpen(true)}
+        onOpenWallpapers={() => setIsWallpapersOpen(true)}
+        onOpenDxLogbook={() => setIsDxLogbookOpen(true)}
+        onOpenAudioSettings={() => setIsAudioSettingsOpen(true)}
         bookmarksCount={favorites.length}
         onToggleOscilloscope={() => setIsOscilloscopeOpen((prev) => !prev)}
         isOscilloscopeOpen={isOscilloscopeOpen}
         isPlaying={isPlaying}
+        isLightMode={isLightMode}
+        onToggleTheme={toggleTheme}
+        isZenMode={isZenMode}
+        onToggleZenMode={() => setIsZenMode((prev) => !prev)}
       />
 
-      {/* ZOOMABLE NOCTURNAL WORLD MAP */}
+      {/* ZOOMABLE CARTOGRAPHY WORLD MAP WITH SKYWAVE BEAMS */}
       <WorldMap
         stations={featuredStations}
         allPlaces={RADIO_GARDEN_PLACES}
         activeStation={activeStation}
         onSelectStation={handleSelectStation}
         isPlaying={isPlaying}
+        isLightMode={isLightMode}
       />
 
-      {/* FLOATING ZEN PLAYER PILL WITH QUICK BOOKMARK & SLEEP TIMER */}
-      <FloatingPlayerPill
+      {/* ZEN FLOATING PLAYER PILL */}
+      {!isZenMode && (
+        <FloatingPlayerPill
+          activeStation={activeStation}
+          currentFrequency={currentFrequency}
+          isPlaying={isPlaying}
+          isMuted={isMuted}
+          volume={volume}
+          onTogglePlay={handleTogglePlay}
+          onToggleMute={handleToggleMute}
+          onVolumeChange={handleVolumeChange}
+          onScrubFrequency={handleScrubFrequency}
+          stations={featuredStations}
+          isBookmarked={favorites.includes(activeStation.id)}
+          onToggleBookmark={() => toggleFavorite(activeStation.id)}
+          isRainActive={isRainActive}
+          isVinylActive={isVinylActive}
+          onToggleRain={handleToggleRain}
+          onToggleVinyl={handleToggleVinyl}
+          sleepMinutesLeft={sleepMinutesLeft}
+          onSetSleepTimer={(mins) => setSleepMinutesLeft(mins)}
+          isLightMode={isLightMode}
+          onOpenAudioSettings={() => setIsAudioSettingsOpen(true)}
+        />
+      )}
+
+      {/* WALLPAPERS & THEMES MODAL */}
+      <WallpaperModal
+        isOpen={isWallpapersOpen}
+        onClose={() => setIsWallpapersOpen(false)}
+        currentWallpaper={currentWallpaper}
+        onSelectWallpaper={handleSelectWallpaper}
+        isLightMode={isLightMode}
+        onToggleTheme={toggleTheme}
+      />
+
+      {/* DX LOGBOOK MODAL */}
+      <DXLogbookModal
+        isOpen={isDxLogbookOpen}
+        onClose={() => setIsDxLogbookOpen(false)}
         activeStation={activeStation}
-        currentFrequency={currentFrequency}
-        isPlaying={isPlaying}
-        isMuted={isMuted}
-        volume={volume}
-        onTogglePlay={handleTogglePlay}
-        onToggleMute={handleToggleMute}
-        onVolumeChange={handleVolumeChange}
-        onScrubFrequency={handleScrubFrequency}
-        stations={featuredStations}
-        isBookmarked={favorites.includes(activeStation.id)}
-        onToggleBookmark={() => toggleFavorite(activeStation.id)}
+        onSelectStation={handleSelectStation}
+        stations={allStations}
+      />
+
+      {/* DSP AUDIO HARDWARE SETTINGS MODAL */}
+      <AudioSettingsModal
+        isOpen={isAudioSettingsOpen}
+        onClose={() => setIsAudioSettingsOpen(false)}
+        activeEqPreset={activeEqPreset}
+        onSelectEqPreset={handleSelectEqPreset}
         isRainActive={isRainActive}
         isVinylActive={isVinylActive}
+        isCosmicActive={isCosmicActive}
         onToggleRain={handleToggleRain}
         onToggleVinyl={handleToggleVinyl}
+        onToggleCosmic={handleToggleCosmic}
         sleepMinutesLeft={sleepMinutesLeft}
         onSetSleepTimer={(mins) => setSleepMinutesLeft(mins)}
       />

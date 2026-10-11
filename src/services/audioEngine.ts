@@ -1,6 +1,8 @@
 // Atmospheric Web Audio Radio Synthesizer & Real Radio Garden Stream Engine
 import { Station } from '../types/radio';
 
+export type EqPreset = 'clean' | 'tube' | 'lofi' | 'deepbass';
+
 class RadioAudioEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
@@ -10,6 +12,12 @@ class RadioAudioEngine {
   private heterodyneGain: GainNode | null = null;
   private heterodyneOsc: OscillatorNode | null = null;
   private analyser: AnalyserNode | null = null;
+
+  // DSP EQ Filter Rack
+  private lowShelfFilter: BiquadFilterNode | null = null;
+  private highCutFilter: BiquadFilterNode | null = null;
+  private midBandFilter: BiquadFilterNode | null = null;
+  private activeEqPreset: EqPreset = 'tube';
 
   // Real Audio Stream element
   private audioElement: HTMLAudioElement | null = null;
@@ -46,7 +54,26 @@ class RadioAudioEngine {
       this.analyser.fftSize = 512;
       this.analyser.smoothingTimeConstant = 0.82;
 
-      this.masterGain.connect(this.analyser);
+      // Build DSP EQ Filter Rack
+      this.lowShelfFilter = this.ctx.createBiquadFilter();
+      this.lowShelfFilter.type = 'lowshelf';
+      this.lowShelfFilter.frequency.setValueAtTime(200, this.ctx.currentTime);
+
+      this.highCutFilter = this.ctx.createBiquadFilter();
+      this.highCutFilter.type = 'lowpass';
+      this.highCutFilter.frequency.setValueAtTime(10000, this.ctx.currentTime);
+
+      this.midBandFilter = this.ctx.createBiquadFilter();
+      this.midBandFilter.type = 'peaking';
+      this.midBandFilter.frequency.setValueAtTime(1200, this.ctx.currentTime);
+
+      this.applyEqPreset(this.activeEqPreset);
+
+      // Connect: Master -> EQ Filters -> Analyser -> Destination
+      this.masterGain.connect(this.lowShelfFilter);
+      this.lowShelfFilter.connect(this.midBandFilter);
+      this.midBandFilter.connect(this.highCutFilter);
+      this.highCutFilter.connect(this.analyser);
       this.analyser.connect(this.ctx.destination);
 
       // Live Stream Channel
@@ -77,6 +104,57 @@ class RadioAudioEngine {
     }
   }
 
+  public getAudioContext(): AudioContext | null {
+    if (!this.ctx) this.init();
+    return this.ctx;
+  }
+
+  public setEqPreset(preset: EqPreset) {
+    this.activeEqPreset = preset;
+    this.applyEqPreset(preset);
+  }
+
+  public getEqPreset(): EqPreset {
+    return this.activeEqPreset;
+  }
+
+  private applyEqPreset(preset: EqPreset) {
+    if (!this.ctx || !this.lowShelfFilter || !this.highCutFilter || !this.midBandFilter) return;
+    const now = this.ctx.currentTime;
+
+    switch (preset) {
+      case 'tube':
+        // Warm vacuum tube pre-amp: +3.5dB warm low shelf, pleasant high-end roll-off
+        this.lowShelfFilter.gain.setTargetAtTime(3.8, now, 0.1);
+        this.lowShelfFilter.frequency.setTargetAtTime(180, now, 0.1);
+        this.midBandFilter.gain.setTargetAtTime(1.2, now, 0.1);
+        this.highCutFilter.frequency.setTargetAtTime(8500, now, 0.1);
+        break;
+      case 'lofi':
+        // Vintage Shortwave / Transistor receiver: bandpass 350Hz - 4200Hz
+        this.lowShelfFilter.gain.setTargetAtTime(-4.0, now, 0.1);
+        this.lowShelfFilter.frequency.setTargetAtTime(350, now, 0.1);
+        this.midBandFilter.gain.setTargetAtTime(4.5, now, 0.1);
+        this.midBandFilter.frequency.setTargetAtTime(1800, now, 0.1);
+        this.highCutFilter.frequency.setTargetAtTime(4500, now, 0.1);
+        break;
+      case 'deepbass':
+        // Midnight sub-bass boost: +6dB sub warmth
+        this.lowShelfFilter.gain.setTargetAtTime(6.0, now, 0.1);
+        this.lowShelfFilter.frequency.setTargetAtTime(120, now, 0.1);
+        this.midBandFilter.gain.setTargetAtTime(0, now, 0.1);
+        this.highCutFilter.frequency.setTargetAtTime(12000, now, 0.1);
+        break;
+      case 'clean':
+      default:
+        // Flat studio monitor
+        this.lowShelfFilter.gain.setTargetAtTime(0, now, 0.1);
+        this.midBandFilter.gain.setTargetAtTime(0, now, 0.1);
+        this.highCutFilter.frequency.setTargetAtTime(20000, now, 0.1);
+        break;
+    }
+  }
+
   private initAudioElement() {
     if (this.audioElement) return;
 
@@ -84,17 +162,14 @@ class RadioAudioEngine {
     this.audioElement.crossOrigin = 'anonymous';
     this.audioElement.preload = 'none';
 
-    // Hook audio events
     this.audioElement.addEventListener('playing', () => {
       this.isLiveStreamPlaying = true;
       if (this.musicGain && this.ctx) {
-        // Fade out synth once real stream starts playing
         this.musicGain.gain.setTargetAtTime(0.0, this.ctx.currentTime, 0.4);
       }
     });
 
     this.audioElement.addEventListener('waiting', () => {
-      // While buffering, gently bring in synth pad
       if (this.musicGain && this.ctx && this.isRunning) {
         this.musicGain.gain.setTargetAtTime(0.35, this.ctx.currentTime, 0.2);
       }
@@ -121,7 +196,6 @@ class RadioAudioEngine {
     }
   }
 
-  // Create an authentic radio static generator with bandpass filtered pink noise
   private initStaticNoise() {
     if (!this.ctx || !this.staticGain) return;
 
@@ -156,7 +230,6 @@ class RadioAudioEngine {
     this.staticBufferNode.start();
   }
 
-  // Heterodyne carrier whistle for analog tuning
   private initHeterodyne() {
     if (!this.ctx || !this.heterodyneGain) return;
 
@@ -186,12 +259,10 @@ class RadioAudioEngine {
     this.isRunning = true;
     this.connectAudioElementToGraph();
 
-    // Start live broadcast stream
     if (this.activeStation) {
       this.playRealStationStream(this.activeStation);
     }
 
-    // Also start gentle ambient synth in background
     this.startAmbientGenerativeScore();
     this.updateTuningBalance(this.currentTunedFrequency);
   }
@@ -199,7 +270,7 @@ class RadioAudioEngine {
   private playRealStationStream(station: Station) {
     if (!this.audioElement) return;
 
-    // Use our server proxy or direct Radio Garden URL
+    // Use our server proxy with fallback to direct Radio Garden URL for standalone/static hosting
     const streamSrc = station.streamUrl || station.directStreamUrl || `https://radio.garden/api/ara/content/listen/${station.id}/channel.mp3`;
 
     this.audioElement.pause();
@@ -209,8 +280,7 @@ class RadioAudioEngine {
     const playPromise = this.audioElement.play();
     if (playPromise !== undefined) {
       playPromise.catch((e) => {
-        console.warn('Real stream play interrupted / falling back:', e);
-        // Fallback to generative synthesis
+        console.warn('Real stream play interrupted / falling back to procedural synth:', e);
         if (this.musicGain && this.ctx && this.isRunning) {
           this.musicGain.gain.setTargetAtTime(0.85, this.ctx.currentTime, 0.1);
         }
@@ -296,16 +366,14 @@ class RadioAudioEngine {
     this.updateTuningBalance(freq);
   }
 
-  // Calculate signal lock, static, and heterodyne based on frequency delta
   private updateTuningBalance(freq: number) {
     if (!this.ctx || !this.streamGain || !this.musicGain || !this.staticGain || !this.heterodyneGain || !this.heterodyneOsc) return;
 
     const delta = Math.abs(freq - this.activeStationFrequency);
-    const lockRange = 0.5; // MHz capture range
+    const lockRange = 0.5;
     const now = this.ctx.currentTime;
 
     if (delta <= 0.08) {
-      // Perfect stereo lock
       this.streamGain.gain.setTargetAtTime(this.isRunning ? 0.9 : 0, now, 0.05);
       this.staticGain.gain.setTargetAtTime(this.isRunning ? 0.025 : 0, now, 0.05);
       this.heterodyneGain.gain.setTargetAtTime(0, now, 0.05);
@@ -313,7 +381,6 @@ class RadioAudioEngine {
         this.musicGain.gain.setTargetAtTime(0.7, now, 0.05);
       }
     } else if (delta < lockRange) {
-      // Approaching station: heterodyne whistle sweeps down
       const proximity = 1 - delta / lockRange;
       const whistleFreq = Math.max(120, Math.min(2400, delta * 3200));
       this.heterodyneOsc.frequency.setTargetAtTime(whistleFreq, now, 0.03);
@@ -326,7 +393,6 @@ class RadioAudioEngine {
       this.staticGain.gain.setTargetAtTime(this.isRunning ? staticLevel : 0, now, 0.04);
       this.heterodyneGain.gain.setTargetAtTime(this.isRunning ? whistleLevel : 0, now, 0.04);
     } else {
-      // In-between stations static
       this.streamGain.gain.setTargetAtTime(0, now, 0.08);
       this.musicGain.gain.setTargetAtTime(0, now, 0.08);
       this.staticGain.gain.setTargetAtTime(this.isRunning ? 0.24 : 0, now, 0.08);
@@ -339,7 +405,6 @@ class RadioAudioEngine {
     this.stopAmbientScore();
     if (!this.ctx || !this.musicGain) return;
 
-    // Atmospheric pentatonic ambient chord sequence
     const chords = [
       [146.83, 220.00, 277.18, 329.63], // Dmaj9
       [185.00, 220.00, 277.18, 370.00], // F#m7

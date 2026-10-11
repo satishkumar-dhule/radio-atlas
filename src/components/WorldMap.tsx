@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { Station, RadioGardenPlace } from '../types/radio';
 
 interface WorldMapProps {
@@ -7,6 +7,7 @@ interface WorldMapProps {
   activeStation: Station;
   onSelectStation: (station: Station) => void;
   isPlaying: boolean;
+  isLightMode: boolean;
 }
 
 export const WorldMap: React.FC<WorldMapProps> = ({
@@ -15,9 +16,11 @@ export const WorldMap: React.FC<WorldMapProps> = ({
   activeStation,
   onSelectStation,
   isPlaying,
+  isLightMode,
 }) => {
   const [showAllNodes, setShowAllNodes] = useState<boolean>(true);
   const [showDayNight, setShowDayNight] = useState<boolean>(true);
+  const [showSkywaveBeam, setShowSkywaveBeam] = useState<boolean>(true);
 
   // Pan & Zoom state
   const [zoom, setZoom] = useState<number>(1.0);
@@ -34,8 +37,6 @@ export const WorldMap: React.FC<WorldMapProps> = ({
     const rect = containerRef.current.getBoundingClientRect();
     const targetZoom = Math.max(2.2, zoom);
 
-    // Station mapPosition x (0..100) and y (0..100)
-    // Convert to pixel offset from center
     const targetX = ((50 - st.mapPosition.x) / 100) * rect.width * (targetZoom / 1.0);
     const targetY = ((50 - st.mapPosition.y) / 100) * rect.height * (targetZoom / 1.0);
 
@@ -43,7 +44,6 @@ export const WorldMap: React.FC<WorldMapProps> = ({
     setPan({ x: targetX, y: targetY });
   }, [zoom]);
 
-  // Zoom controls
   const handleZoomIn = () => {
     setZoom((prev) => Math.min(6.0, Math.round((prev + 0.6) * 10) / 10));
   };
@@ -61,7 +61,6 @@ export const WorldMap: React.FC<WorldMapProps> = ({
     setPan({ x: 0, y: 0 });
   };
 
-  // Mouse wheel zoom
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
     const zoomFactor = e.deltaY < 0 ? 1.2 : 0.83;
@@ -70,7 +69,6 @@ export const WorldMap: React.FC<WorldMapProps> = ({
       if (newZoom === 1.0) {
         setPan({ x: 0, y: 0 });
       } else {
-        // Adjust pan slightly to zoom towards cursor
         setPan((p) => ({
           x: p.x * zoomFactor * 0.95,
           y: p.y * zoomFactor * 0.95,
@@ -80,9 +78,8 @@ export const WorldMap: React.FC<WorldMapProps> = ({
     });
   };
 
-  // Drag handlers
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.button !== 0) return; // Only left click
+    if (e.button !== 0) return;
     setIsDragging(true);
     setHasMoved(false);
     setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
@@ -94,7 +91,6 @@ export const WorldMap: React.FC<WorldMapProps> = ({
     const newX = e.clientX - dragStart.x;
     const newY = e.clientY - dragStart.y;
 
-    // Constrain pan within boundary limits based on zoom
     const maxPanX = (zoom - 1) * 450 + 200;
     const maxPanY = (zoom - 1) * 250 + 120;
 
@@ -108,7 +104,6 @@ export const WorldMap: React.FC<WorldMapProps> = ({
     setIsDragging(false);
   };
 
-  // Touch handlers for mobile
   const touchStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const handleTouchStart = (e: React.TouchEvent) => {
     if (e.touches.length === 1) {
@@ -133,18 +128,21 @@ export const WorldMap: React.FC<WorldMapProps> = ({
     setIsDragging(false);
   };
 
-  // Calculate Sun terminator position for night hemisphere
+  // Sun terminator
   const now = new Date();
   const utcHours = now.getUTCHours() + now.getUTCMinutes() / 60;
-  // Subsolar longitude in degrees
   const sunLng = -((utcHours - 12) * 15);
-  // Convert sunLng to map percent x (0..100)
   const sunX = ((sunLng + 180) / 360) * 1000;
-  // Night center is opposite sun
   const nightCenterX = (sunX + 500) % 1000;
 
-  // Inverse scale for beacons so dots stay refined at high zoom
   const beaconScale = 1 / Math.pow(zoom, 0.45);
+
+  const stX = (activeStation.mapPosition.x / 100) * 1000;
+  const stY = (activeStation.mapPosition.y / 100) * 500;
+  const listenerX = 880;
+  const listenerY = 150;
+  const midX = (stX + listenerX) / 2;
+  const midY = Math.min(stY, listenerY) - 55;
 
   return (
     <main
@@ -169,32 +167,54 @@ export const WorldMap: React.FC<WorldMapProps> = ({
         className="relative w-full max-w-[1380px] h-[78%] sm:h-[82%] flex items-center justify-center px-4 sm:px-6 pointer-events-auto"
       >
         <svg
-          className="w-full h-full object-contain pointer-events-none select-none opacity-45 transition-opacity duration-1000"
+          className="w-full h-full object-contain pointer-events-none select-none opacity-40 dark:opacity-40 transition-opacity duration-1000"
           preserveAspectRatio="xMidYMid meet"
           viewBox="0 0 1000 500"
         >
           <defs>
             <radialGradient cx="50%" cy="50%" id="oceanGlow" r="50%">
-              <stop offset="0%" stopColor="#121a28" stopOpacity="0.4" />
-              <stop offset="60%" stopColor="#0b0f17" stopOpacity="0.22" />
-              <stop offset="100%" stopColor="#080b11" stopOpacity="0" />
+              <stop
+                offset="0%"
+                stopColor={isLightMode ? '#cbd5e1' : '#121a28'}
+                stopOpacity={isLightMode ? 0.25 : 0.35}
+              />
+              <stop
+                offset="60%"
+                stopColor={isLightMode ? '#e2e8f0' : '#0b0f17'}
+                stopOpacity={isLightMode ? 0.1 : 0.18}
+              />
+              <stop
+                offset="100%"
+                stopColor={isLightMode ? '#f1f5f9' : '#080b11'}
+                stopOpacity="0"
+              />
             </radialGradient>
 
-            {/* Earth Day / Night Twilight Gradient */}
             <linearGradient id="twilightGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor="#080b11" stopOpacity="0.65" />
-              <stop offset="45%" stopColor="#080b11" stopOpacity="0.1" />
-              <stop offset="50%" stopColor="#ffc174" stopOpacity="0.08" />
-              <stop offset="55%" stopColor="#080b11" stopOpacity="0.1" />
-              <stop offset="100%" stopColor="#080b11" stopOpacity="0.65" />
+              <stop offset="0%" stopColor={isLightMode ? '#0f172a' : '#080b11'} stopOpacity={isLightMode ? 0.12 : 0.6} />
+              <stop offset="45%" stopColor={isLightMode ? '#0f172a' : '#080b11'} stopOpacity="0.04" />
+              <stop offset="50%" stopColor="#ffc174" stopOpacity="0.06" />
+              <stop offset="55%" stopColor={isLightMode ? '#0f172a' : '#080b11'} stopOpacity="0.04" />
+              <stop offset="100%" stopColor={isLightMode ? '#0f172a' : '#080b11'} stopOpacity={isLightMode ? 0.12 : 0.6} />
+            </linearGradient>
+
+            <linearGradient id="skywaveBeamGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#ffc174" stopOpacity="0.75" />
+              <stop offset="50%" stopColor="#4edea3" stopOpacity="0.5" />
+              <stop offset="100%" stopColor="#8ed5ff" stopOpacity="0.25" />
             </linearGradient>
           </defs>
 
           {/* Ocean Ambient Center Glow */}
-          <circle cx="500" cy="250" fill="url(#oceanGlow)" r="390" />
+          <circle cx="500" cy="250" fill="url(#oceanGlow)" r="380" />
 
-          {/* Atmospheric Coordinate Grids */}
-          <g stroke="#1e2738" strokeWidth="0.5" strokeDasharray="3 4" opacity="0.45">
+          {/* Hairline Coordinate Grids */}
+          <g
+            stroke={isLightMode ? '#94a3b8' : '#1e2738'}
+            strokeWidth="0.35"
+            strokeDasharray="2 4"
+            opacity={isLightMode ? 0.5 : 0.4}
+          >
             <line x1="80" y1="250" x2="920" y2="250" />
             <line x1="120" y1="160" x2="880" y2="160" />
             <line x1="120" y1="340" x2="880" y2="340" />
@@ -203,13 +223,13 @@ export const WorldMap: React.FC<WorldMapProps> = ({
             <line x1="700" y1="80" x2="700" y2="420" />
           </g>
 
-          {/* Continental Zen Silhouettes */}
+          {/* Continental Silhouettes */}
           <g
             className="transition-all duration-700"
-            fill="#131924"
-            stroke="#1d2636"
+            fill={isLightMode ? '#cbd5e1' : '#131924'}
+            stroke={isLightMode ? '#94a3b8' : '#1d2636'}
             strokeLinejoin="round"
-            strokeWidth="0.75"
+            strokeWidth="0.5"
           >
             {/* North America */}
             <polygon points="120,75 165,60 235,70 285,115 265,165 210,185 190,230 150,210 130,165 95,125 90,90" />
@@ -234,12 +254,12 @@ export const WorldMap: React.FC<WorldMapProps> = ({
             <polygon points="760,255 820,265 810,305 770,295" />
             <polygon points="840,165 865,175 855,230 830,220" />
 
-            {/* Oceania / Australia */}
+            {/* Oceania */}
             <polygon points="780,340 850,330 880,380 840,430 760,410 750,360" />
             <polygon points="885,410 910,420 895,450 875,440" />
           </g>
 
-          {/* Real-time Solar Night Shadow Terminator */}
+          {/* Solar Night Shadow */}
           {showDayNight && (
             <ellipse
               cx={nightCenterX}
@@ -250,9 +270,26 @@ export const WorldMap: React.FC<WorldMapProps> = ({
               className="pointer-events-none transition-all duration-1000"
             />
           )}
+
+          {/* Ionospheric Skywave Beam */}
+          {showSkywaveBeam && isPlaying && (
+            <g className="transition-all duration-500">
+              <path
+                d={`M ${stX} ${stY} Q ${midX} ${midY} ${listenerX} ${listenerY}`}
+                fill="none"
+                stroke="url(#skywaveBeamGrad)"
+                strokeWidth="1.25"
+                strokeDasharray="3 4"
+                opacity="0.75"
+                className="animate-pulse"
+              />
+              <circle cx={stX} cy={stY} r="3.5" fill="#ffc174" opacity="0.9" />
+              <circle cx={listenerX} cy={listenerY} r="2.5" fill="#4edea3" opacity="0.8" />
+            </g>
+          )}
         </svg>
 
-        {/* Ambient Radio Garden place grid nodes */}
+        {/* Ambient Radio Garden place nodes */}
         {showAllNodes &&
           allPlaces.map((pl) => {
             const isNearActive =
@@ -271,7 +308,7 @@ export const WorldMap: React.FC<WorldMapProps> = ({
                 }}
                 className="absolute pointer-events-none z-20 transition-transform duration-300"
               >
-                <div className="w-1.5 h-1.5 rounded-full bg-[#4edea3]/40 shadow-[0_0_4px_#4edea3]" />
+                <div className={`w-1 h-1 rounded-full ${isLightMode ? 'bg-[#059669]/40' : 'bg-[#4edea3]/35'}`} />
               </div>
             );
           })}
@@ -295,7 +332,7 @@ export const WorldMap: React.FC<WorldMapProps> = ({
                 top: `${st.mapPosition.y}%`,
                 transform: `translate(-50%, -50%) scale(${beaconScale})`,
               }}
-              className="station-node absolute cursor-pointer z-30 group p-3 focus:outline-none transition-transform duration-300"
+              className="station-node absolute cursor-pointer z-30 group p-2.5 focus:outline-none transition-transform duration-300"
               role="button"
               tabIndex={0}
               onKeyDown={(e) => {
@@ -310,18 +347,13 @@ export const WorldMap: React.FC<WorldMapProps> = ({
                 {isActive && (
                   <>
                     <div
-                      className={`active-halo absolute w-14 h-14 rounded-full ${
+                      className={`active-halo absolute w-12 h-12 rounded-full ${
                         isAmber ? 'bg-[#ffc174]/15' : 'bg-[#4edea3]/15'
                       } beacon-ripple pointer-events-none`}
                     />
                     <div
-                      className={`active-halo-delayed absolute w-14 h-14 rounded-full ${
-                        isAmber ? 'bg-[#ffc174]/10' : 'bg-[#4edea3]/10'
-                      } beacon-ripple-delayed pointer-events-none`}
-                    />
-                    <div
-                      className={`active-ping absolute w-7 h-7 rounded-full ${
-                        isAmber ? 'bg-[#ffc174]/25' : 'bg-[#4edea3]/25'
+                      className={`active-ping absolute w-6 h-6 rounded-full ${
+                        isAmber ? 'bg-[#ffc174]/20' : 'bg-[#4edea3]/20'
                       } pointer-events-none transition-all`}
                     />
                   </>
@@ -332,11 +364,11 @@ export const WorldMap: React.FC<WorldMapProps> = ({
                   className={`node-dot rounded-full transition-all duration-300 ${
                     isActive
                       ? isAmber
-                        ? 'w-3.5 h-3.5 bg-[#ffc174] shadow-[0_0_20px_rgba(255,193,116,0.95)] scale-110'
-                        : 'w-3.5 h-3.5 bg-[#4edea3] shadow-[0_0_20px_rgba(78,222,163,0.95)] scale-110'
+                        ? 'w-3 h-3 bg-[#ffc174] shadow-[0_0_16px_rgba(255,193,116,0.9)] scale-110'
+                        : 'w-3 h-3 bg-[#4edea3] shadow-[0_0_16px_rgba(78,222,163,0.9)] scale-110'
                       : isAmber
-                      ? 'w-2.5 h-2.5 bg-[#ffc174]/60 hover:bg-[#ffc174] shadow-[0_0_10px_rgba(255,193,116,0.5)] group-hover:scale-125'
-                      : 'w-2.5 h-2.5 bg-[#4edea3]/60 hover:bg-[#4edea3] shadow-[0_0_10px_rgba(78,222,163,0.5)] group-hover:scale-125'
+                      ? 'w-2 h-2 bg-[#ffc174]/60 hover:bg-[#ffc174] shadow-[0_0_8px_rgba(255,193,116,0.4)] group-hover:scale-125'
+                      : 'w-2 h-2 bg-[#4edea3]/60 hover:bg-[#4edea3] shadow-[0_0_8px_rgba(78,222,163,0.4)] group-hover:scale-125'
                   }`}
                 />
 
@@ -345,26 +377,25 @@ export const WorldMap: React.FC<WorldMapProps> = ({
                   style={{
                     transform: `translateX(-50%) scale(${1 / beaconScale})`,
                   }}
-                  className={`absolute bottom-6 left-1/2 pointer-events-none whitespace-nowrap font-mono text-[11px] tracking-wider bg-[#080b11]/94 px-3 py-1.5 rounded-full border border-white/10 backdrop-blur-md shadow-2xl transition-all duration-300 z-50 origin-bottom ${
+                  className={`absolute bottom-5 left-1/2 pointer-events-none whitespace-nowrap font-mono text-[10px] tracking-wider px-2.5 py-1 rounded-full border backdrop-blur-md shadow-xl transition-all duration-300 z-50 origin-bottom ${
+                    isLightMode
+                      ? 'bg-white/95 text-slate-800 border-slate-300'
+                      : 'bg-[#080b11]/94 text-[#e2e6f0] border-white/10'
+                  } ${
                     isActive
-                      ? 'opacity-100 translate-y-0 text-[#e2e6f0] border-[#ffc174]/30'
-                      : 'opacity-0 group-hover:opacity-100 translate-y-1 group-hover:translate-y-0 text-[#a5b0c4]'
+                      ? 'opacity-100 translate-y-0 border-[#ffc174]/40'
+                      : 'opacity-0 group-hover:opacity-100 translate-y-1 group-hover:translate-y-0'
                   }`}
                 >
-                  <span className="font-semibold text-[#e2e6f0]">{st.city}</span>
-                  <span className="text-white/30 mx-1.5">•</span>
-                  <span className={isAmber ? 'text-[#ffc174]' : 'text-[#4edea3]'}>
+                  <span className="font-semibold">{st.city}</span>
+                  <span className="opacity-30 mx-1">•</span>
+                  <span className={isAmber ? 'text-[#ffc174]' : 'text-[#059669] dark:text-[#4edea3]'}>
                     {st.frequencyDisplay}
                   </span>
-                  <span className="text-white/30 mx-1.5">•</span>
-                  <span className="text-white/70 max-w-[140px] truncate inline-block align-bottom">
+                  <span className="opacity-30 mx-1">•</span>
+                  <span className="opacity-75 max-w-[120px] truncate inline-block align-bottom">
                     {st.title}
                   </span>
-                  {isActive && isPlaying && (
-                    <span className="ml-2 inline-flex items-center text-[10px] text-[#4edea3] animate-pulse">
-                      ● LIVE STREAM
-                    </span>
-                  )}
                 </div>
               </div>
             </div>
@@ -372,73 +403,49 @@ export const WorldMap: React.FC<WorldMapProps> = ({
         })}
       </div>
 
-      {/* FLOATING ZOOM & COMPASS HUD CONTROLS */}
-      <div className="absolute right-6 bottom-24 sm:bottom-28 z-40 flex flex-col items-center gap-1.5 bg-[#0e131d]/90 backdrop-blur-md p-1.5 rounded-2xl border border-white/10 shadow-2xl">
-        {/* Zoom In */}
+      {/* ULTRA-THIN SLENDER ZOOM CONTROLS (BOTTOM RIGHT) */}
+      <div
+        className={`absolute right-5 bottom-20 sm:bottom-24 z-40 flex flex-col items-center gap-1 p-1 rounded-xl border shadow-lg backdrop-blur-md transition-opacity duration-200 opacity-60 hover:opacity-100 ${
+          isLightMode
+            ? 'bg-white/80 border-slate-200 text-slate-700'
+            : 'bg-[#0e131d]/80 border-white/10 text-[#e2e6f0]'
+        }`}
+      >
         <button
           onClick={handleZoomIn}
           title="Zoom in (+)"
-          className="w-8 h-8 rounded-xl bg-white/[0.04] hover:bg-white/10 flex items-center justify-center text-[#e2e6f0] transition-colors active:scale-95 text-base"
+          className="w-6 h-6 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center transition-colors active:scale-95 text-sm font-semibold"
         >
           +
         </button>
 
-        {/* Zoom Value Display */}
-        <div className="text-[10px] font-mono text-[#7d8799] py-0.5 tabular-nums">
+        <div className="text-[9px] font-mono opacity-60 tabular-nums">
           {Math.round(zoom * 100)}%
         </div>
 
-        {/* Zoom Out */}
         <button
           onClick={handleZoomOut}
           title="Zoom out (−)"
-          className="w-8 h-8 rounded-xl bg-white/[0.04] hover:bg-white/10 flex items-center justify-center text-[#e2e6f0] transition-colors active:scale-95 text-base"
+          className="w-6 h-6 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center transition-colors active:scale-95 text-sm font-semibold"
         >
           −
         </button>
 
-        <div className="w-4 h-[1px] bg-white/10 my-0.5" />
-
-        {/* Focus on Active Station */}
         <button
           onClick={() => focusStation(activeStation)}
-          title="Target Active Station"
-          className="w-8 h-8 rounded-xl bg-white/[0.04] hover:bg-[#ffc174]/20 hover:text-[#ffc174] flex items-center justify-center text-[#7d8799] transition-colors active:scale-95"
+          title="Center Active Station"
+          className="w-6 h-6 rounded-lg hover:bg-[#ffc174]/20 hover:text-[#ffc174] flex items-center justify-center transition-colors active:scale-95"
         >
-          <span className="material-symbols-outlined text-[17px]">my_location</span>
+          <span className="material-symbols-outlined text-[14px]">my_location</span>
         </button>
 
-        {/* Reset View */}
         <button
           onClick={handleResetView}
-          title="Reset to Full World View"
-          className="w-8 h-8 rounded-xl bg-white/[0.04] hover:bg-white/10 flex items-center justify-center text-[#7d8799] hover:text-[#e2e6f0] transition-colors active:scale-95"
+          title="Reset to World View"
+          className="w-6 h-6 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center transition-colors active:scale-95"
         >
-          <span className="material-symbols-outlined text-[17px]">restart_alt</span>
+          <span className="material-symbols-outlined text-[14px]">restart_alt</span>
         </button>
-      </div>
-
-      {/* MAP STATUS & MINI LOCATOR INSET */}
-      <div className="absolute bottom-24 sm:bottom-28 left-6 z-30 hidden md:flex items-center gap-3">
-        {/* Radio Garden Network Tag */}
-        <div className="flex items-center gap-2 text-[10px] font-mono text-[#7d8799]/85 bg-[#080b11]/85 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/10 shadow-lg">
-          <span className="w-1.5 h-1.5 rounded-full bg-[#4edea3] shadow-[0_0_6px_#4edea3]" />
-          <span>Interactive Zoomable Airwaves</span>
-          <span className="text-white/20">|</span>
-          <button
-            onClick={() => setShowDayNight(!showDayNight)}
-            className="hover:text-[#ffc174] transition-colors"
-          >
-            {showDayNight ? 'Night Shadow ON' : 'Night Shadow OFF'}
-          </button>
-          <span className="text-white/20">|</span>
-          <button
-            onClick={() => setShowAllNodes(!showAllNodes)}
-            className="hover:text-[#4edea3] transition-colors"
-          >
-            {showAllNodes ? 'Place Nodes ON' : 'Place Nodes OFF'}
-          </button>
-        </div>
       </div>
     </main>
   );
