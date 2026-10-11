@@ -1,0 +1,121 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-geist: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-jetbrains: 'JetBrains Mono', monospace;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+    background-color: #080b11;
+    color: #e2e6f0;
+    font-family: var(--font-geist);
+    overscroll-behavior: none;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+.font-mono {
+  font-family: var(--font-jetbrains), monospace;
+}
+
+.font-body {
+  font-family: var(--font-geist), sans-serif;
+}
+
+@keyframes zen-ripple {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 0.45;
+  }
+  100% {
+    transform: scale(3.2);
+    opacity: 0;
+  }
+}
+
+@keyframes gentle-glow {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.35;
+  }
+  100% {
+    transform: scale(1.18);
+    opacity: 0.75;
+  }
+}
+
+@keyframes static-flicker {
+  0%, 100% { opacity: 0.95; }
+  50% { opacity: 0.85; }
+  75% { opacity: 0.9; }
+}
+
+.beacon-ripple {
+  animation: zen-ripple 3.2s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+}
+
+.beacon-ripple-delayed {
+  animation: zen-ripple 3.2s cubic-bezier(0.2, 0.8, 0.2, 1) infinite 1.2s;
+}
+
+.subtle-pulse {
+  animation: gentle-glow 4s ease-in-out infinite alternate;
+}
+
+/* Custom micro-scrubber styling */
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ffc174;
+  box-shadow: 0 0 10px rgba(255, 193, 116, 0.8);
+  cursor: grab;
+  transition: transform 0.15s ease, background-color 0.15s ease;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.25);
+  background: #f59e0b;
+}
+
+input[type="range"]::-webkit-slider-thumb:active {
+  cursor: grabbing;
+  transform: scale(1.35);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: none;
+  background: #ffc174;
+  box-shadow: 0 0 10px rgba(255, 193, 116, 0.8);
+  cursor: grab;
+}
+
+/* Custom scrollbar for drawer */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(8, 11, 17, 0.6);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 193, 116, 0.35);
+}
