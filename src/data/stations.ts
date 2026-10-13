@@ -134,8 +134,7 @@ export async function searchRadioGardenLive(query: string): Promise<Station[]> {
     });
 
     return results;
-  } catch (err) {
-    console.warn('Failed to search radio garden live:', err);
+  } catch {
     return [];
   }
 }

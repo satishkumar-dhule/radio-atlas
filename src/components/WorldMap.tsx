@@ -3,8 +3,11 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Station, RadioGardenPlace } from '../types/radio';
 import { radioGardenService } from '../services/radioGardenService';
+import { audioEngine } from '../services/audioEngine';
 import { SkinThemeId } from '../types/wallpaper';
 import { analytics } from '../services/analytics';
+
+import { StationDynamicPalette } from '../utils/themeFormula';
 
 export type MapTileMode = 'cyber' | 'satellite' | 'topo';
 
@@ -17,17 +20,8 @@ interface WorldMapProps {
   isPlaying: boolean;
   isLightMode: boolean;
   skinTheme?: SkinThemeId;
+  palette?: StationDynamicPalette;
   onMapClick?: () => void;
-}
-
-interface ClickRadarPing {
-  id: number;
-  lat: number;
-  lng: number;
-  targetLat: number;
-  targetLng: number;
-  placeTitle: string;
-  distanceKm: number;
 }
 
 interface FanOutStationCluster {
@@ -38,7 +32,7 @@ interface FanOutStationCluster {
   isLoading: boolean;
 }
 
-// Great-circle haversine distance in km
+// Haversine distance in km
 function haversineDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number) {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -62,6 +56,7 @@ export const WorldMap: React.FC<WorldMapProps> = ({
   isPlaying,
   isLightMode,
   skinTheme = 'amber',
+  palette,
   onMapClick,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -72,12 +67,10 @@ export const WorldMap: React.FC<WorldMapProps> = ({
   const skywaveLayerRef = useRef<L.LayerGroup | null>(null);
   const canvasRendererRef = useRef<L.Canvas | null>(null);
 
-  // Default to 'cyber' or user preference
   const [tileMode, setTileMode] = useState<MapTileMode>('cyber');
-  const [activeRadarPing, setActiveRadarPing] = useState<ClickRadarPing | null>(null);
   const [fanOutCluster, setFanOutCluster] = useState<FanOutStationCluster | null>(null);
 
-  // 100% Free & No API Key Required Tile Providers with accurate subdomains
+  // 100% Free & No API Key Required Tile Providers
   const TILE_PROVIDERS: Record<
     MapTileMode,
     {
@@ -85,47 +78,37 @@ export const WorldMap: React.FC<WorldMapProps> = ({
       subdomains: string[];
       maxZoom: number;
       label: string;
-      shortLabel: string;
-      icon: string;
-      description: string;
     }
   > = useMemo(
     () => ({
       cyber: {
         url: isLightMode
-          ? 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
-          : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-        subdomains: ['a', 'b', 'c', 'd'],
-        maxZoom: 19,
-        label: 'Cyber Matrix',
-        shortLabel: 'Cyber',
-        icon: 'radar',
-        description: 'High-contrast nocturnal vector cartography (Free · No Key)',
+          ? 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}'
+          : 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+        subdomains: [],
+        maxZoom: 16,
+        label: 'Cyber Vector',
       },
       satellite: {
         url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
         subdomains: [],
         maxZoom: 18,
-        label: 'Natural Satellite',
-        shortLabel: 'Natural',
-        icon: 'public',
-        description: 'True photorealistic natural satellite imagery (Free · No Key)',
+        label: 'Satellite',
       },
       topo: {
         url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
         subdomains: [],
         maxZoom: 18,
-        label: 'Natural Topo',
-        shortLabel: 'Topo',
-        icon: 'terrain',
-        description: 'Crisp terrain elevation contours and mountain ranges (Free · No Key)',
+        label: 'Topography',
       },
     }),
     [isLightMode]
   );
 
-  // Accent color hex based on active skin
   const getSkinColor = useCallback(() => {
+    if (palette?.accentHex) {
+      return palette.accentHex;
+    }
     switch (skinTheme) {
       case 'emerald':
         return '#4edea3';
@@ -139,19 +122,16 @@ export const WorldMap: React.FC<WorldMapProps> = ({
       default:
         return '#ffc174';
     }
-  }, [skinTheme]);
+  }, [skinTheme, palette]);
 
   const tuneHandlerRef = useRef<(lat: number, lng: number, directPlace?: RadioGardenPlace) => void>(() => {});
 
-  // Handle tuning into a place / coordinates
   const handleMapPointTune = useCallback(
     async (lat: number, lng: number, directPlace?: RadioGardenPlace) => {
-      // Notify parent to close any open header modals / menus
       if (onMapClick) {
         onMapClick();
       }
 
-      // Find direct place or nearest among all 12,845 places
       let targetPlace: RadioGardenPlace | undefined = directPlace;
       let targetLat = lat;
       let targetLng = lng;
@@ -161,7 +141,6 @@ export const WorldMap: React.FC<WorldMapProps> = ({
         let closestDist = Infinity;
         let closestPlace = allPlaces[0];
 
-        // Search nearest place with bounding box pre-filter
         for (let i = 0; i < allPlaces.length; i++) {
           const p = allPlaces[i];
           const pLat = p.geo[1];
@@ -198,18 +177,6 @@ export const WorldMap: React.FC<WorldMapProps> = ({
 
       if (!targetPlace) return;
 
-      const pingId = Date.now();
-      setActiveRadarPing({
-        id: pingId,
-        lat,
-        lng,
-        targetLat,
-        targetLng,
-        placeTitle: targetPlace.title,
-        distanceKm: minDistance,
-      });
-
-      // Track click-to-tune analytics
       analytics.trackMapInteraction('click_radar', {
         lat,
         lng,
@@ -219,12 +186,6 @@ export const WorldMap: React.FC<WorldMapProps> = ({
         distanceKm: minDistance,
       });
 
-      // Auto-hide ping HUD toast after 4s
-      setTimeout(() => {
-        setActiveRadarPing((current) => (current?.id === pingId ? null : current));
-      }, 4000);
-
-      // Check if place has matching station in current pool
       const existing =
         allStations.find((s) => s.placeId === targetPlace?.id || s.city.toLowerCase() === targetPlace?.title.toLowerCase()) ||
         stations.find((s) => s.city.toLowerCase() === targetPlace?.title.toLowerCase());
@@ -232,11 +193,10 @@ export const WorldMap: React.FC<WorldMapProps> = ({
       if (existing) {
         onSelectStation(existing);
       } else {
-        // Immediate play: synthesize station object right away so audio plays instantly
         const freq = 88.0 + ((Math.abs(Math.round(targetLng * 10)) % 180) / 10);
         const instantStation: Station = {
           id: `place_${targetPlace.id}`,
-          title: `${targetPlace.title} FM`,
+          title: `${targetPlace.title} Radio`,
           city: targetPlace.title,
           country: targetPlace.country,
           placeId: targetPlace.id,
@@ -261,7 +221,6 @@ export const WorldMap: React.FC<WorldMapProps> = ({
         onSelectStation(instantStation);
       }
 
-      // Open Channel Navigator Drawer with loading indicator
       setFanOutCluster({
         place: targetPlace,
         stations: existing ? [existing] : [],
@@ -270,7 +229,6 @@ export const WorldMap: React.FC<WorldMapProps> = ({
         isLoading: true,
       });
 
-      // Fetch all live channels for this place
       try {
         const fetched = await radioGardenService.fetchChannelsForPlace(targetPlace);
         if (fetched.length > 0) {
@@ -296,7 +254,7 @@ export const WorldMap: React.FC<WorldMapProps> = ({
     tuneHandlerRef.current = handleMapPointTune;
   }, [handleMapPointTune]);
 
-  // Initialize Leaflet Map
+  // Leaflet Map Initialization
   useEffect(() => {
     if (!mapContainerRef.current) return;
     if (mapInstanceRef.current) return;
@@ -317,7 +275,6 @@ export const WorldMap: React.FC<WorldMapProps> = ({
 
     canvasRendererRef.current = L.canvas({ padding: 0.5 });
 
-    // Initial Tile Layer
     const provider = TILE_PROVIDERS[tileMode];
     const tileLayer = L.tileLayer(provider.url, {
       maxZoom: provider.maxZoom,
@@ -328,12 +285,10 @@ export const WorldMap: React.FC<WorldMapProps> = ({
 
     tileLayerRef.current = tileLayer;
 
-    // High performance Layer Groups
     placesCanvasLayerRef.current = L.layerGroup().addTo(map);
     activeBeaconLayerRef.current = L.layerGroup().addTo(map);
     skywaveLayerRef.current = L.layerGroup().addTo(map);
 
-    // Map click: tune nearest place and close any open modals
     map.on('click', (e: L.LeafletMouseEvent) => {
       tuneHandlerRef.current(e.latlng.lat, e.latlng.lng);
     });
@@ -346,7 +301,7 @@ export const WorldMap: React.FC<WorldMapProps> = ({
     };
   }, []);
 
-  // Update Tile Layer when tileMode or theme changes
+  // Update Tile Layer
   useEffect(() => {
     if (!mapInstanceRef.current) return;
     const provider = TILE_PROVIDERS[tileMode];
@@ -365,7 +320,7 @@ export const WorldMap: React.FC<WorldMapProps> = ({
     tileLayerRef.current = newTileLayer;
   }, [tileMode, isLightMode, TILE_PROVIDERS]);
 
-  // RENDER ALL 12,845 RADIO GARDEN PLACES (Every single transmitter worldwide!)
+  // Render all places onto Canvas
   useEffect(() => {
     if (!mapInstanceRef.current || !placesCanvasLayerRef.current || !canvasRendererRef.current) return;
     placesCanvasLayerRef.current.clearLayers();
@@ -380,27 +335,26 @@ export const WorldMap: React.FC<WorldMapProps> = ({
       const pLng = place.geo[0];
       const count = place.stationCount || 1;
 
-      // Radius scales gracefully with channel density
-      let radius = 2.5;
-      let opacity = 0.55;
+      let radius = 2.4;
+      let opacity = 0.5;
       let weight = 0.8;
-      let fillOpacity = 0.45;
+      let fillOpacity = 0.4;
 
       if (count >= 15) {
-        radius = 6.0;
-        opacity = 0.95;
-        weight = 1.6;
-        fillOpacity = 0.85;
+        radius = 5.5;
+        opacity = 0.9;
+        weight = 1.4;
+        fillOpacity = 0.8;
       } else if (count >= 5) {
-        radius = 4.2;
-        opacity = 0.8;
-        weight = 1.2;
-        fillOpacity = 0.65;
+        radius = 4.0;
+        opacity = 0.75;
+        weight = 1.1;
+        fillOpacity = 0.6;
       } else if (count >= 2) {
-        radius = 3.2;
-        opacity = 0.65;
-        weight = 1.0;
-        fillOpacity = 0.5;
+        radius = 3.0;
+        opacity = 0.6;
+        weight = 0.9;
+        fillOpacity = 0.45;
       }
 
       const circleMarker = L.circleMarker([pLat, pLng], {
@@ -413,22 +367,19 @@ export const WorldMap: React.FC<WorldMapProps> = ({
         fillOpacity,
       });
 
-      // Clean, rich hover tooltip
       circleMarker.bindTooltip(
-        `<div style="font-family: monospace; font-size: 11px; padding: 3px 6px; line-height: 1.3;">
-          <strong style="color: #ffffff;">${place.title}</strong>, ${place.country}<br/>
-          <span style="color: ${skinColor}; font-weight: 600;">📡 ${count} channel${count > 1 ? 's' : ''} live</span>
-          <span style="opacity: 0.5; font-size: 9px; display: block; margin-top: 1px;">Click to tune & browse all</span>
+        `<div style="font-family: inherit; font-size: 11px; padding: 2px 4px;">
+          <div style="font-weight: 600; color: #fff;">${place.title}, ${place.country}</div>
+          <div style="color: ${skinColor}; font-size: 10px;">${count} station${count > 1 ? 's' : ''}</div>
         </div>`,
         {
           direction: 'top',
-          offset: [0, -6],
+          offset: [0, -4],
           className: 'custom-leaflet-tooltip',
-          opacity: 0.96,
+          opacity: 0.95,
         }
       );
 
-      // Marker click: tune and open Channel Navigator!
       circleMarker.on('click', (e) => {
         L.DomEvent.stopPropagation(e);
         tuneHandlerRef.current(pLat, pLng, place);
@@ -438,7 +389,20 @@ export const WorldMap: React.FC<WorldMapProps> = ({
     });
   }, [allPlaces, getSkinColor]);
 
-  // REDRAW ACTIVE TRANSMITTER BEACON & SKYWAVE ARC
+  // Auto-focus camera on tuned station smoothly
+  useEffect(() => {
+    if (!mapInstanceRef.current || !activeStation.coordinates) return;
+    const lat = activeStation.coordinates.lat;
+    const lng = activeStation.coordinates.lng;
+
+    // Smoothly fly to the newly tuned station
+    mapInstanceRef.current.flyTo([lat, lng], Math.max(5.5, mapInstanceRef.current.getZoom()), {
+      duration: 1.2,
+      easeLinearity: 0.25,
+    });
+  }, [activeStation.id]);
+
+  // Real-Time Audio Sound Wave Beats & Radiating Transmission Waves
   useEffect(() => {
     if (!mapInstanceRef.current || !activeBeaconLayerRef.current) return;
     activeBeaconLayerRef.current.clearLayers();
@@ -447,37 +411,91 @@ export const WorldMap: React.FC<WorldMapProps> = ({
     const lat = activeStation.coordinates?.lat ?? 25;
     const lng = activeStation.coordinates?.lng ?? 0;
 
-    // Glowing pulsing active beacon
-    const activeOuterRing = L.circleMarker([lat, lng], {
-      radius: 14,
+    // 1. Dynamic Interactive DivIcon with realistic multi-layer RF transmission antenna and radiating wave propagation
+    const transmissionIcon = L.divIcon({
+      className: 'transmission-marker-container',
+      html: `
+        <div id="radio-pulse-root" style="position: relative; width: 120px; height: 120px; transform: translate(-60px, -60px); pointer-events: none;">
+          <!-- Radiating RF Wave 1 -->
+          <div id="rf-wave-1" class="rf-pulse-1" style="position: absolute; inset: 0; border-radius: 9999px; border: 2px solid ${skinColor}; background: radial-gradient(circle, ${skinColor}35 0%, transparent 70%);"></div>
+          <!-- Radiating RF Wave 2 -->
+          <div id="rf-wave-2" class="rf-pulse-2" style="position: absolute; inset: 12px; border-radius: 9999px; border: 1.8px solid ${skinColor}; background: radial-gradient(circle, ${skinColor}30 0%, transparent 65%);"></div>
+          <!-- Radiating RF Wave 3 -->
+          <div id="rf-wave-3" class="rf-pulse-3" style="position: absolute; inset: 24px; border-radius: 9999px; border: 1.5px solid ${skinColor}; background: radial-gradient(circle, ${skinColor}25 0%, transparent 60%);"></div>
+          <!-- Radiating RF Wave 4 -->
+          <div id="rf-wave-4" class="rf-pulse-4" style="position: absolute; inset: 36px; border-radius: 9999px; border: 1.2px solid ${skinColor};"></div>
+
+          <!-- Crosshair Broadcast Calibrator -->
+          <svg width="120" height="120" class="absolute inset-0 pointer-events-none opacity-40">
+            <line x1="60" y1="20" x2="60" y2="44" stroke="${skinColor}" stroke-width="1.2" stroke-dasharray="2,3" />
+            <line x1="60" y1="76" x2="60" y2="100" stroke="${skinColor}" stroke-width="1.2" stroke-dasharray="2,3" />
+            <line x1="20" y1="60" x2="44" y2="60" stroke="${skinColor}" stroke-width="1.2" stroke-dasharray="2,3" />
+            <line x1="76" y1="60" x2="100" y2="60" stroke="${skinColor}" stroke-width="1.2" stroke-dasharray="2,3" />
+          </svg>
+
+          <!-- Center Glowing Transmitter Tower & Radio Core -->
+          <div id="radio-core-elem" class="radio-core" style="position: absolute; inset: 50px; border-radius: 9999px; background: #ffffff; border: 2.5px solid ${skinColor}; box-shadow: 0 0 20px ${skinColor}, 0 0 40px ${skinColor}80; transition: transform 0.05s ease-out;">
+            <div style="position: absolute; inset: 3px; border-radius: 9999px; background: ${skinColor};"></div>
+          </div>
+        </div>
+      `,
+      iconSize: [0, 0],
+      iconAnchor: [0, 0],
+    });
+
+    const transmissionMarker = L.marker([lat, lng], {
+      icon: transmissionIcon,
+      interactive: false,
+      zIndexOffset: 1000,
+    });
+
+    activeBeaconLayerRef.current.addLayer(transmissionMarker);
+
+    // 2. Physical RF propagation wave circle on cartography surface
+    const baseRadius = 60000;
+    const broadcastCircle = L.circle([lat, lng], {
+      radius: baseRadius,
       color: skinColor,
-      weight: 1.8,
-      opacity: 0.9,
+      weight: 1.5,
+      opacity: 0.6,
       fillColor: skinColor,
-      fillOpacity: 0.2,
-      className: 'active-beacon-pulse',
+      fillOpacity: 0.08,
+      interactive: false,
     });
 
-    const activeInnerDot = L.circleMarker([lat, lng], {
-      radius: 5,
-      color: '#ffffff',
-      weight: 2,
-      opacity: 1,
-      fillColor: skinColor,
-      fillOpacity: 1,
-    });
+    activeBeaconLayerRef.current.addLayer(broadcastCircle);
 
-    activeBeaconLayerRef.current.addLayer(activeOuterRing);
-    activeBeaconLayerRef.current.addLayer(activeInnerDot);
+    // 3. High-Performance Audio Beat Loop (Modulates waves with sound wave beats)
+    let animId: number;
+    const tickAudioBeat = () => {
+      animId = requestAnimationFrame(tickAudioBeat);
+      const energy = audioEngine.getAudioEnergy();
+      const beatScale = 1.0 + energy.beat * 0.75;
+      const coreScale = 1.0 + energy.bass * 0.6;
 
-    // Subtle skywave geodesic carrier wave connecting to Tokyo prime receiver
+      const coreElem = document.getElementById('radio-core-elem');
+      if (coreElem) {
+        coreElem.style.transform = `scale(${coreScale.toFixed(2)})`;
+        coreElem.style.boxShadow = `0 0 ${(14 + energy.bass * 20).toFixed(0)}px ${skinColor}`;
+      }
+
+      // Modulate broadcast coverage circle with bass beats
+      const dynamicRadius = baseRadius + energy.bass * 45000;
+      broadcastCircle.setRadius(dynamicRadius);
+      broadcastCircle.setStyle({
+        opacity: 0.3 + energy.rms * 0.5,
+        fillOpacity: 0.03 + energy.beat * 0.08,
+      });
+    };
+
+    animId = requestAnimationFrame(tickAudioBeat);
+
     if (skywaveLayerRef.current) {
       skywaveLayerRef.current.clearLayers();
       const receiverLat = 35.68;
       const receiverLng = 139.69;
 
-      // Arc calculation
-      const midLat = (lat + receiverLat) / 2 + 12;
+      const midLat = (lat + receiverLat) / 2 + 10;
       const midLng = (lng + receiverLng) / 2;
 
       const curvePoints: [number, number][] = [
@@ -489,44 +507,36 @@ export const WorldMap: React.FC<WorldMapProps> = ({
       const skywaveLine = L.polyline(curvePoints, {
         color: skinColor,
         weight: 1.2,
-        opacity: isPlaying ? 0.45 : 0.2,
-        dashArray: '4, 8',
+        opacity: isPlaying ? 0.4 : 0.15,
+        dashArray: '3, 6',
       });
 
       skywaveLayerRef.current.addLayer(skywaveLine);
     }
+
+    return () => {
+      cancelAnimationFrame(animId);
+    };
   }, [activeStation, isPlaying, getSkinColor]);
 
-  // Map Controls
   const handleFocusStation = () => {
     if (!mapInstanceRef.current) return;
     const lat = activeStation.coordinates?.lat ?? 20;
     const lng = activeStation.coordinates?.lng ?? 0;
     mapInstanceRef.current.flyTo([lat, lng], Math.max(6, mapInstanceRef.current.getZoom()), {
-      duration: 1.2,
-      easeLinearity: 0.25,
+      duration: 1.0,
     });
   };
 
   const handleResetWorldView = () => {
     if (!mapInstanceRef.current) return;
-    mapInstanceRef.current.flyTo([20, 0], 2.5, { duration: 1.0 });
+    mapInstanceRef.current.flyTo([20, 0], 2.5, { duration: 0.8 });
   };
 
-  const handleZoomIn = () => {
-    mapInstanceRef.current?.zoomIn();
-  };
-
-  const handleZoomOut = () => {
-    mapInstanceRef.current?.zoomOut();
-  };
-
-  // Close drawer on Escape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setFanOutCluster(null);
-        setActiveRadarPing(null);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -534,15 +544,15 @@ export const WorldMap: React.FC<WorldMapProps> = ({
   }, []);
 
   return (
-    <div className="relative flex-1 w-full h-full z-10 overflow-hidden select-none">
-      {/* 1. Leaflet Interactive Map Viewport */}
+    <div className="absolute inset-0 w-full h-full z-0 overflow-hidden select-none">
+      {/* 1. Map Canvas Viewport */}
       <div
         ref={mapContainerRef}
         className="w-full h-full z-0 cursor-crosshair active:cursor-grabbing outline-none"
       />
 
-      {/* 2. RADICAL MAP SCENE SWITCHER: 1-Click Cyber vs Natural Satellite vs Topo (100% Free · No API Key) */}
-      <div className="absolute top-3.5 left-4 sm:top-5 sm:left-6 z-20 flex items-center gap-1 p-1 rounded-2xl border shadow-2xl backdrop-blur-2xl bg-[#080b11]/85 border-white/15 text-xs font-mono">
+      {/* 2. Scene Mode Segmented Control (Minimal, unboxed) */}
+      <div className="absolute top-4 left-4 sm:top-6 sm:left-8 z-20 flex items-center gap-1 p-1 rounded-xl border backdrop-blur-2xl text-xs font-mono bg-[#080b11]/80 border-white/10 text-white/80">
         {(['cyber', 'satellite', 'topo'] as MapTileMode[]).map((mode) => {
           const isSelected = tileMode === mode;
           const prov = TILE_PROVIDERS[mode];
@@ -553,105 +563,60 @@ export const WorldMap: React.FC<WorldMapProps> = ({
                 setTileMode(mode);
                 analytics.trackMapInteraction('tile_switch', { tileMode: mode, label: prov.label });
               }}
-              title={`${prov.label} — ${prov.description}`}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 active:scale-95 ${
+              className={`px-2.5 py-1 rounded-lg transition-colors capitalize ${
                 isSelected
-                  ? 'bg-white/20 text-white shadow-md font-semibold'
-                  : 'text-white/70 hover:text-white hover:bg-white/10'
+                  ? 'bg-white/20 text-white font-medium'
+                  : 'hover:bg-white/10 text-white/70 hover:text-white'
               }`}
             >
-              <span
-                className="material-symbols-outlined text-[15px]"
-                style={{ color: isSelected ? getSkinColor() : undefined }}
-              >
-                {prov.icon}
-              </span>
-              <span>{prov.shortLabel}</span>
+              {mode}
             </button>
           );
         })}
-
-        <div className="w-[1px] h-4 bg-white/15 mx-1 hidden sm:block" />
-
-        {/* Global Radio Node Counter */}
-        <div className="hidden sm:flex items-center gap-1 px-2 text-[10px] text-white/50 tracking-wider">
-          <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: getSkinColor() }} />
-          <span>12,845 HUBS LIVE</span>
-        </div>
       </div>
 
-      {/* 3. Top Radar Feedback Toast */}
-      {activeRadarPing && (
-        <div className="absolute top-16 left-4 sm:left-6 z-20 flex items-center gap-2.5 px-3.5 py-2 rounded-2xl border shadow-2xl backdrop-blur-2xl animate-in fade-in slide-in-from-top-2 duration-300 bg-[#080b11]/92 border-white/20 text-white text-xs font-mono pointer-events-none">
-          <span className="w-2.5 h-2.5 rounded-full animate-ping" style={{ backgroundColor: getSkinColor() }} />
-          <div className="flex flex-col">
-            <div className="flex items-center gap-1.5 font-semibold">
-              <span className="material-symbols-outlined text-[14px]" style={{ color: getSkinColor() }}>
-                radar
-              </span>
-              <span>TUNED: {activeRadarPing.placeTitle}</span>
-            </div>
-            <span className="text-[10px] opacity-70">
-              Broadcast locked • {activeRadarPing.distanceKm} km from scan point
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* 4. SUPER CHANNEL NAVIGATOR (Non-overlapping Side Drawer) */}
+      {/* 3. Channel Navigator Drawer (Non-overlapping left sheet) */}
       {fanOutCluster && (
-        <div className="absolute top-16 sm:top-20 left-4 sm:left-6 bottom-24 sm:bottom-28 z-30 w-[88vw] max-w-sm rounded-3xl border shadow-2xl backdrop-blur-2xl bg-[#090d16]/95 border-white/15 text-[#e2e6f0] p-4 font-mono flex flex-col animate-in fade-in slide-in-from-left-4 duration-200">
-          {/* Header */}
+        <div className="absolute top-16 sm:top-20 left-4 sm:left-8 bottom-24 sm:bottom-28 z-30 w-[88vw] max-w-sm rounded-2xl border shadow-2xl backdrop-blur-2xl bg-[#090d16]/95 border-white/10 text-[#e2e6f0] p-4 font-mono flex flex-col animate-in fade-in slide-in-from-left-4 duration-200">
           <div className="flex items-center justify-between border-b border-white/10 pb-3 mb-3 flex-shrink-0">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <span className="material-symbols-outlined text-[20px]" style={{ color: getSkinColor() }}>
-                hub
+            <div className="flex flex-col min-w-0">
+              <span className="font-semibold text-sm text-white truncate">
+                {fanOutCluster.place.title}
               </span>
-              <div className="flex flex-col min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="font-semibold text-sm text-white truncate">
-                    {fanOutCluster.place.title}
-                  </span>
-                  <span className="text-[10px] opacity-60">({fanOutCluster.place.country})</span>
-                </div>
-                <span className="text-[10px] opacity-70">
-                  {fanOutCluster.isLoading
-                    ? 'Scanning global carrier frequencies...'
-                    : `${fanOutCluster.stations.length} channel${fanOutCluster.stations.length > 1 ? 's' : ''} on airwaves`}
-                </span>
-              </div>
+              <span className="text-[11px] opacity-60">
+                {fanOutCluster.place.country} · {fanOutCluster.stations.length} on air
+              </span>
             </div>
 
             <div className="flex items-center gap-1">
               <button
-                onClick={() => handleFocusStation()}
-                title="Focus Location on Globe"
-                className="p-1.5 rounded-xl hover:bg-white/10 transition-colors text-white/70 hover:text-white"
+                onClick={handleFocusStation}
+                title="Focus coordinates"
+                className="p-1 rounded-lg hover:bg-white/10 text-white/70 hover:text-white transition-colors"
               >
                 <span className="material-symbols-outlined text-[16px]">my_location</span>
               </button>
               <button
                 onClick={() => setFanOutCluster(null)}
-                title="Close Channel Navigator (Esc)"
-                className="p-1.5 rounded-xl hover:bg-white/10 transition-colors text-white/70 hover:text-white"
+                title="Close"
+                className="p-1 rounded-lg hover:bg-white/10 text-white/70 hover:text-white transition-colors"
               >
                 <span className="material-symbols-outlined text-[16px]">close</span>
               </button>
             </div>
           </div>
 
-          {/* Scrollable Channels List */}
-          <div className="flex-1 overflow-y-auto flex flex-col gap-2 pr-1 scrollbar-thin scrollbar-thumb-white/20">
+          <div className="flex-1 overflow-y-auto flex flex-col gap-1.5 pr-1">
             {fanOutCluster.isLoading ? (
-              <div className="flex flex-col items-center justify-center py-12 gap-3 text-xs opacity-75">
-                <span className="material-symbols-outlined text-[22px] animate-spin" style={{ color: getSkinColor() }}>
+              <div className="flex flex-col items-center justify-center py-12 gap-2 text-xs opacity-70">
+                <span className="material-symbols-outlined text-[20px] animate-spin" style={{ color: getSkinColor() }}>
                   progress_activity
                 </span>
-                <span>Locking broadcast signal...</span>
+                <span>Connecting live stream...</span>
               </div>
             ) : fanOutCluster.stations.length === 0 ? (
-              <div className="text-center py-8 text-xs opacity-60">
-                No active audio carriers registered for this coordinate.
+              <div className="text-center py-8 text-xs opacity-50">
+                No active stations found for this location.
               </div>
             ) : (
               fanOutCluster.stations.map((st) => {
@@ -663,41 +628,28 @@ export const WorldMap: React.FC<WorldMapProps> = ({
                       onSelectStation(st);
                       analytics.trackStationTune(st, 'fan_out');
                     }}
-                    className={`flex items-center justify-between p-2.5 rounded-2xl border text-left transition-all active:scale-[0.98] ${
+                    className={`flex items-center justify-between p-2 rounded-xl text-left transition-colors ${
                       isSelected
-                        ? 'bg-white/15 border-white/30 text-white shadow-lg'
-                        : 'bg-white/[0.04] border-white/5 hover:bg-white/[0.09] text-white/80 hover:text-white'
+                        ? 'bg-white/20 text-white font-medium'
+                        : 'hover:bg-white/5 text-white/80 hover:text-white'
                     }`}
                   >
-                    <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="flex items-center gap-2 min-w-0">
                       <span
-                        className={`w-2 h-2 rounded-full flex-shrink-0 ${isSelected && isPlaying ? 'animate-ping' : ''}`}
-                        style={{ backgroundColor: isSelected ? getSkinColor() : 'rgba(255,255,255,0.4)' }}
+                        className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: isSelected ? getSkinColor() : 'rgba(255,255,255,0.3)' }}
                       />
                       <div className="flex flex-col min-w-0">
-                        <span className="font-semibold text-xs truncate text-white">{st.title}</span>
-                        <div className="flex items-center gap-2 text-[10px] opacity-70">
-                          <span style={{ color: getSkinColor() }}>{st.frequencyDisplay}</span>
-                          <span>·</span>
-                          <span className="truncate">{st.bitrate || '128k MP3'}</span>
-                        </div>
+                        <span className="text-xs truncate">{st.title}</span>
+                        <span className="text-[10px] opacity-60">{st.frequencyDisplay}</span>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 flex-shrink-0 pl-2">
-                      {isSelected && isPlaying && (
-                        <span className="material-symbols-outlined text-[17px] animate-pulse" style={{ color: getSkinColor() }}>
-                          equalizer
-                        </span>
-                      )}
-                      <span
-                        className={`text-[10px] px-2.5 py-0.5 rounded-full font-medium ${
-                          isSelected ? 'bg-white/20 text-white font-semibold' : 'bg-white/5 opacity-75'
-                        }`}
-                      >
-                        {isSelected ? 'Tuned' : 'Listen'}
+                    {isSelected && isPlaying && (
+                      <span className="material-symbols-outlined text-[15px]" style={{ color: getSkinColor() }}>
+                        equalizer
                       </span>
-                    </div>
+                    )}
                   </button>
                 );
               })
@@ -706,46 +658,37 @@ export const WorldMap: React.FC<WorldMapProps> = ({
         </div>
       )}
 
-      {/* 5. Minimal Non-Overlapping Globe Navigation Toolbar (Docked Bottom-Right) */}
-      <div className="absolute bottom-6 right-4 sm:bottom-8 sm:right-6 z-20 flex flex-col items-center gap-1.5 p-1 rounded-2xl border shadow-2xl backdrop-blur-2xl bg-[#080b11]/85 border-white/15 text-[#e2e6f0]">
-        {/* Focus Active Station */}
+      {/* 4. Docked Navigation Toolbar */}
+      <div className="absolute bottom-6 right-4 sm:bottom-8 sm:right-8 z-20 flex flex-col gap-1 p-1 rounded-xl border backdrop-blur-2xl bg-[#080b11]/80 border-white/10 text-white/80">
         <button
           onClick={handleFocusStation}
-          title="Fly to Playing Station"
-          className="w-8 h-8 rounded-xl hover:bg-white/10 flex items-center justify-center transition-colors active:scale-95 text-white/80 hover:text-white"
+          title="Focus playing station"
+          className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"
         >
           <span className="material-symbols-outlined text-[16px]" style={{ color: getSkinColor() }}>
             my_location
           </span>
         </button>
-
-        {/* Reset World Globe */}
         <button
           onClick={handleResetWorldView}
-          title="Reset World Globe"
-          className="w-8 h-8 rounded-xl hover:bg-white/10 flex items-center justify-center transition-colors active:scale-95 text-white/80 hover:text-white"
+          title="Reset globe view"
+          className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"
         >
           <span className="material-symbols-outlined text-[16px]">public</span>
         </button>
-
-        <div className="w-4 h-[1px] bg-white/15 my-0.5" />
-
-        {/* Zoom In */}
         <button
-          onClick={handleZoomIn}
-          title="Zoom In (+)"
-          className="w-8 h-8 rounded-xl hover:bg-white/10 flex items-center justify-center text-sm font-semibold transition-colors active:scale-95 text-white/80 hover:text-white"
+          onClick={() => mapInstanceRef.current?.zoomIn()}
+          title="Zoom in"
+          className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"
         >
-          +
+          <span className="material-symbols-outlined text-[16px]">add</span>
         </button>
-
-        {/* Zoom Out */}
         <button
-          onClick={handleZoomOut}
-          title="Zoom Out (-)"
-          className="w-8 h-8 rounded-xl hover:bg-white/10 flex items-center justify-center text-sm font-semibold transition-colors active:scale-95 text-white/80 hover:text-white"
+          onClick={() => mapInstanceRef.current?.zoomOut()}
+          title="Zoom out"
+          className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"
         >
-          -
+          <span className="material-symbols-outlined text-[16px]">remove</span>
         </button>
       </div>
     </div>

@@ -99,8 +99,8 @@ class RadioAudioEngine {
       this.initStaticNoise();
       this.initHeterodyne();
       this.initAudioElement();
-    } catch (e) {
-      console.warn('AudioContext failed to initialize:', e);
+    } catch {
+      // AudioContext fallback handled gracefully
     }
   }
 
@@ -176,7 +176,6 @@ class RadioAudioEngine {
     });
 
     this.audioElement.addEventListener('error', () => {
-      console.warn('Real stream error, falling back to procedural audio');
       this.isLiveStreamPlaying = false;
       if (this.musicGain && this.ctx && this.isRunning) {
         this.musicGain.gain.setTargetAtTime(0.85, this.ctx.currentTime, 0.2);
@@ -191,8 +190,8 @@ class RadioAudioEngine {
       this.mediaSourceNode = this.ctx.createMediaElementSource(this.audioElement);
       this.mediaSourceNode.connect(this.streamGain);
       this.isStreamConnected = true;
-    } catch (err) {
-      console.warn('MediaElementSource error (will play directly):', err);
+    } catch {
+      // Audio element will play direct if WebAudio routing fails
     }
   }
 
@@ -292,14 +291,12 @@ class RadioAudioEngine {
 
         const playPromise = this.audioElement.play();
         if (playPromise !== undefined) {
-          playPromise.catch((e) => {
-            console.warn(`Stream candidate ${src} failed, trying next fallback:`, e);
+          playPromise.catch(() => {
             tryNextCandidate();
           });
         }
       } else {
         // Fall back gracefully to procedural ambient audio
-        console.warn('All stream candidates exhausted, engaging procedural ambient synthesizer');
         this.isLiveStreamPlaying = false;
         if (this.musicGain && this.ctx && this.isRunning) {
           this.musicGain.gain.setTargetAtTime(0.85, this.ctx.currentTime, 0.1);
@@ -513,6 +510,36 @@ class RadioAudioEngine {
     const data = new Uint8Array(this.analyser.frequencyBinCount);
     this.analyser.getByteFrequencyData(data);
     return data;
+  }
+
+  // Real-time audio energy & beat analysis for live transmission waves
+  public getAudioEnergy(): { rms: number; bass: number; beat: number } {
+    if (!this.analyser || this.isMuted) {
+      return { rms: 0.15, bass: 0.2, beat: 0.1 };
+    }
+
+    const freqData = new Uint8Array(this.analyser.frequencyBinCount);
+    this.analyser.getByteFrequencyData(freqData);
+
+    // Bass energy (first 8 frequency bins, ~20Hz - 250Hz)
+    let bassSum = 0;
+    const bassBins = Math.min(8, freqData.length);
+    for (let i = 0; i < bassBins; i++) {
+      bassSum += freqData[i];
+    }
+    const bass = bassSum / (bassBins * 255);
+
+    // Overall RMS
+    let totalSum = 0;
+    for (let i = 0; i < freqData.length; i++) {
+      totalSum += freqData[i];
+    }
+    const rms = totalSum / (freqData.length * 255);
+
+    // Dynamic beat pulse (sharper spike when bass hits)
+    const beat = Math.min(1.0, Math.pow(bass, 1.4) * 1.5);
+
+    return { rms, bass, beat };
   }
 }
 

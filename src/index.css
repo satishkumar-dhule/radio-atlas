@@ -28,47 +28,84 @@
   font-family: var(--font-geist), sans-serif;
 }
 
-@keyframes zen-ripple {
+@keyframes radio-broadcast-pulse {
   0% {
-    transform: scale(0.7);
-    opacity: 0.85;
+    transform: scale(0.6);
+    opacity: 0.95;
   }
   50% {
-    opacity: 0.45;
+    opacity: 0.6;
   }
   100% {
-    transform: scale(3.2);
+    transform: scale(3.8);
     opacity: 0;
   }
 }
 
-@keyframes gentle-glow {
+@keyframes radio-core-beacon {
   0% {
-    transform: scale(0.95);
-    opacity: 0.35;
+    transform: scale(0.9);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.25);
+    opacity: 1;
   }
   100% {
-    transform: scale(1.18);
-    opacity: 0.75;
+    transform: scale(0.9);
+    opacity: 0.85;
   }
 }
 
-@keyframes static-flicker {
-  0%, 100% { opacity: 0.95; }
-  50% { opacity: 0.85; }
-  75% { opacity: 0.9; }
+/* Realistic Vintage & Modern Analog Radio Frequency Tuner Dials */
+.radio-tuner-dial {
+  transform-style: preserve-3d;
+  transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s ease;
+  background: radial-gradient(circle at 35% 30%, #1e293b 0%, #090d16 80%);
 }
 
-.beacon-ripple {
-  animation: zen-ripple 3.2s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+.radio-tuner-dial:hover {
+  transform: translateY(-8px) rotateX(10deg) rotateY(-8deg) scale(1.08);
 }
 
-.beacon-ripple-delayed {
-  animation: zen-ripple 3.2s cubic-bezier(0.2, 0.8, 0.2, 1) infinite 1.2s;
+@keyframes carrier-wave-sinusoid {
+  0% {
+    stroke-dashoffset: 0;
+  }
+  100% {
+    stroke-dashoffset: -120;
+  }
 }
 
-.subtle-pulse {
-  animation: gentle-glow 4s ease-in-out infinite alternate;
+.carrier-sine-wave {
+  animation: carrier-wave-sinusoid 4s linear infinite;
+}
+
+@keyframes rf-broadcast-ring {
+  0% {
+    transform: scale(0.35);
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(3.4);
+    opacity: 0;
+  }
+}
+
+.rf-pulse-1 {
+  animation: rf-broadcast-ring 2.8s cubic-bezier(0.1, 0.7, 0.1, 1) infinite;
+}
+.rf-pulse-2 {
+  animation: rf-broadcast-ring 2.8s cubic-bezier(0.1, 0.7, 0.1, 1) infinite 0.7s;
+}
+.rf-pulse-3 {
+  animation: rf-broadcast-ring 2.8s cubic-bezier(0.1, 0.7, 0.1, 1) infinite 1.4s;
+}
+.rf-pulse-4 {
+  animation: rf-broadcast-ring 2.8s cubic-bezier(0.1, 0.7, 0.1, 1) infinite 2.1s;
 }
 
 /* Custom micro-scrubber styling */
@@ -102,6 +139,20 @@ input[type="range"]::-moz-range-thumb {
   background: #ffc174;
   box-shadow: 0 0 10px rgba(255, 193, 116, 0.8);
   cursor: grab;
+}
+
+/* Apple Watch Activity Ring & 3D Tilt Badge Styling */
+.badge-perspective {
+  perspective: 1000px;
+}
+
+.apple-watch-badge {
+  transform-style: preserve-3d;
+  transition: transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.25s ease;
+}
+
+.apple-watch-badge:hover {
+  transform: translateY(-8px) rotateX(12deg) rotateY(-8deg) scale(1.08);
 }
 
 /* Custom scrollbar for drawer */

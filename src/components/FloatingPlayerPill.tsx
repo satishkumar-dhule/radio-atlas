@@ -1,14 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Station } from '../types/radio';
+import { StationDynamicPalette } from '../utils/themeFormula';
 import { analytics } from '../services/analytics';
 
 interface FloatingPlayerPillProps {
   activeStation: Station;
   currentFrequency: number;
-  isPlaying: boolean;
   isMuted: boolean;
   volume: number;
-  onTogglePlay: () => void;
   onToggleMute: () => void;
   onVolumeChange: (vol: number) => void;
   onScrubFrequency: (freq: number) => void;
@@ -27,15 +26,14 @@ interface FloatingPlayerPillProps {
   isLightMode: boolean;
   onOpenAudioSettings: () => void;
   onOpenBookmarks?: () => void;
+  palette: StationDynamicPalette;
 }
 
 export const FloatingPlayerPill: React.FC<FloatingPlayerPillProps> = ({
   activeStation,
   currentFrequency,
-  isPlaying,
   isMuted,
   volume,
-  onTogglePlay,
   onToggleMute,
   onVolumeChange,
   onScrubFrequency,
@@ -54,6 +52,7 @@ export const FloatingPlayerPill: React.FC<FloatingPlayerPillProps> = ({
   isLightMode,
   onOpenAudioSettings,
   onOpenBookmarks,
+  palette,
 }) => {
   const [showVolumeSlider, setShowVolumeSlider] = useState<boolean>(false);
   const [showQuickSettings, setShowQuickSettings] = useState<boolean>(false);
@@ -66,7 +65,6 @@ export const FloatingPlayerPill: React.FC<FloatingPlayerPillProps> = ({
 
   const isScanning = Math.abs(currentFrequency - activeStation.frequency) > 0.18;
 
-  // Auto-close popovers on click outside
   useEffect(() => {
     const handleOutsideClick = (e: MouseEvent) => {
       if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
@@ -85,7 +83,7 @@ export const FloatingPlayerPill: React.FC<FloatingPlayerPillProps> = ({
     navigator.clipboard?.writeText(url);
     setCopiedLink(true);
     analytics.trackEvent('share_station', { station_id: activeStation.id, title: activeStation.title });
-    setTimeout(() => setCopiedLink(false), 1800);
+    setTimeout(() => setCopiedLink(false), 1500);
   };
 
   const bookmarkedStations = (allStations.length > 0 ? allStations : stations).filter((st) =>
@@ -95,21 +93,19 @@ export const FloatingPlayerPill: React.FC<FloatingPlayerPillProps> = ({
   return (
     <div
       ref={containerRef}
-      className="relative z-40 w-full pb-4 sm:pb-6 flex flex-col items-center justify-center px-4 pointer-events-none select-none"
+      className="absolute bottom-0 left-0 right-0 z-40 pb-5 sm:pb-7 flex flex-col items-center justify-center px-4 pointer-events-none select-none"
     >
-      {/* Expandable Integrated Presets Tray */}
+      {/* 1. Presets Drawer Row */}
       {showPresetsBar && (
         <div
-          className={`mb-2 pointer-events-auto flex items-center gap-1 sm:gap-1.5 px-3 py-1.5 rounded-2xl border shadow-2xl backdrop-blur-2xl transition-all duration-200 animate-in fade-in slide-in-from-bottom-2 text-[10px] font-mono ${
+          className={`mb-2 pointer-events-auto flex items-center gap-1.5 px-3 py-1.5 rounded-xl border shadow-xl backdrop-blur-2xl transition-all duration-200 animate-in fade-in slide-in-from-bottom-2 text-xs font-mono ${
             isLightMode
-              ? 'bg-white/90 border-slate-200 text-slate-800 shadow-slate-200/60'
-              : 'bg-[#090d16]/95 border-white/15 text-[#e2e6f0] shadow-black/80'
+              ? 'bg-white/95 border-slate-200 text-slate-800'
+              : 'bg-[#090d16]/95 border-white/10 text-[#e2e6f0]'
           }`}
+          style={{ borderColor: palette.borderColor }}
         >
-          <span className="opacity-50 uppercase text-[9px] font-semibold tracking-wider mr-1">
-            Presets:
-          </span>
-
+          <span className="opacity-40 text-[11px] uppercase mr-1">Presets</span>
           {Array.from({ length: 6 }).map((_, idx) => {
             const st = bookmarkedStations[idx];
             const isSlotActive = st && st.id === activeStation.id;
@@ -119,16 +115,16 @@ export const FloatingPlayerPill: React.FC<FloatingPlayerPillProps> = ({
                 <button
                   key={st.id}
                   onClick={() => onSelectStation(st)}
-                  title={`P${idx + 1}: ${st.title} (${st.city} · ${st.frequencyDisplay})`}
-                  className={`flex items-center gap-1 px-2.5 py-1 rounded-xl transition-all active:scale-95 ${
-                    isSlotActive
-                      ? 'bg-[#ffc174]/25 border border-[#ffc174]/80 text-[#ffc174] shadow-[0_0_8px_rgba(255,193,116,0.3)] font-semibold'
-                      : 'bg-white/5 hover:bg-white/10 border border-transparent hover:border-white/10 text-white/80'
-                  }`}
+                  title={`${st.title} (${st.city} · ${st.frequencyDisplay})`}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg transition-colors text-xs hover:bg-black/5 dark:hover:bg-white/10"
+                  style={{
+                    backgroundColor: isSlotActive ? palette.tagBg : undefined,
+                    color: isSlotActive ? palette.accentHex : palette.textContrast,
+                    fontWeight: isSlotActive ? 600 : 400,
+                  }}
                 >
-                  <span className="font-bold">P{idx + 1}</span>
-                  <span className="truncate max-w-[60px] hidden sm:inline">{st.city}</span>
-                  {isSlotActive && <span className="w-1.5 h-1.5 rounded-full bg-[#ffc174] animate-pulse" />}
+                  <span className="font-semibold">{idx + 1}</span>
+                  <span className="truncate max-w-[55px] hidden sm:inline">{st.city}</span>
                 </button>
               );
             }
@@ -136,11 +132,12 @@ export const FloatingPlayerPill: React.FC<FloatingPlayerPillProps> = ({
             return (
               <button
                 key={`empty-${idx}`}
-                onClick={() => onToggleBookmark()}
-                title={`Bookmark current station into Preset P${idx + 1}`}
-                className="px-2 py-1 rounded-xl opacity-40 hover:opacity-100 hover:bg-white/5 border border-dashed border-white/20 transition-all text-[9px]"
+                onClick={onToggleBookmark}
+                title={`Bookmark current station into slot ${idx + 1}`}
+                className="px-2 py-1 rounded-lg opacity-60 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5 border border-dashed border-current text-[11px]"
+                style={{ color: palette.textMuted }}
               >
-                +P{idx + 1}
+                +{idx + 1}
               </button>
             );
           })}
@@ -148,68 +145,79 @@ export const FloatingPlayerPill: React.FC<FloatingPlayerPillProps> = ({
           {onOpenBookmarks && (
             <button
               onClick={onOpenBookmarks}
-              title="Open Full Bookmarks Manager"
-              className="ml-1 px-2 py-1 rounded-xl hover:bg-white/10 text-[#ffc174] transition-colors"
+              title="Open all bookmarks"
+              className="ml-1 p-1 rounded-lg hover:bg-white/10 transition-colors"
+              style={{ color: palette.accentHex }}
             >
-              <span className="material-symbols-outlined text-[13px]">open_in_new</span>
+              <span className="material-symbols-outlined text-[15px]">open_in_new</span>
             </button>
           )}
 
           <button
             onClick={() => setShowPresetsBar(false)}
-            title="Close Presets Bar"
-            className="p-1 rounded-lg hover:bg-white/10 opacity-60 hover:opacity-100 transition-colors ml-0.5"
+            title="Close Presets"
+            className="p-1 rounded-lg hover:bg-white/10 opacity-50 hover:opacity-100 transition-colors ml-0.5"
           >
-            <span className="material-symbols-outlined text-[13px]">close</span>
+            <span className="material-symbols-outlined text-[14px]">close</span>
           </button>
         </div>
       )}
 
-      {/* Main Slender Floating Console */}
+      {/* 2. Main Console Dock (Always Playing: Mute/Unmute + Volume, No Play/Pause) */}
       <div
-        className={`pointer-events-auto w-full max-w-xl backdrop-blur-2xl border rounded-full px-3.5 sm:px-4 py-2 shadow-2xl flex flex-col gap-1.5 transition-all duration-300 ${
+        className={`pointer-events-auto w-full max-w-xl backdrop-blur-2xl border rounded-2xl px-4 py-2.5 shadow-2xl flex flex-col gap-2 transition-all duration-300 ${
           isLightMode
-            ? 'bg-white/90 border-slate-200/90 text-slate-800 shadow-slate-200/70'
-            : 'bg-[#080b11]/90 border-white/10 text-[#e2e6f0] shadow-black/80 hover:border-white/20'
+            ? 'bg-white/95 text-slate-800'
+            : 'bg-[#090d16]/95 text-[#e2e6f0]'
         }`}
+        style={{
+          borderColor: palette.borderColor,
+          boxShadow: `0 16px 40px rgba(0, 0, 0, 0.7), 0 0 24px ${palette.accentMuted}`,
+        }}
       >
-        {/* Slender Top Row */}
-        <div className="flex items-center justify-between gap-2.5">
-          {/* Left: Compact Play Button & Inline Airwave Typography */}
-          <div className="flex items-center gap-2.5 min-w-0">
-            <button
-              onClick={onTogglePlay}
-              className={`w-9 h-9 rounded-full transition-all duration-200 flex items-center justify-center flex-shrink-0 active:scale-95 shadow-md ${
-                isPlaying
-                  ? 'bg-[#ffc174] text-[#080b11] shadow-[0_0_12px_rgba(255,193,116,0.4)]'
-                  : isLightMode
-                  ? 'bg-slate-100 hover:bg-[#ffc174] text-slate-800'
-                  : 'bg-white/[0.08] hover:bg-[#ffc174] text-[#e2e6f0] hover:text-[#080b11]'
-              }`}
-              aria-label={isPlaying ? 'Pause broadcast' : 'Play broadcast'}
+        {/* Top Playback Row */}
+        <div className="flex items-center justify-between gap-3">
+          {/* Left: Live On-Air Signal Badge & Station Details */}
+          <div className="flex items-center gap-3 min-w-0">
+            {/* Live Indicator Icon */}
+            <div
+              className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-transform"
+              style={{
+                backgroundColor: isMuted ? 'rgba(255,255,255,0.06)' : palette.tagBg,
+                color: isMuted ? 'rgba(255,255,255,0.4)' : palette.accentHex,
+              }}
+              title={isMuted ? 'Muted' : 'Transmitting Live Airwave'}
             >
-              <span className="material-symbols-outlined text-[19px]">
-                {isPlaying ? 'pause' : 'play_arrow'}
+              <span
+                className={`material-symbols-outlined text-[18px] ${
+                  !isMuted ? 'animate-pulse' : ''
+                }`}
+              >
+                {isMuted ? 'volume_off' : 'podcasts'}
               </span>
-            </button>
+            </div>
 
-            {/* Inline Station Details */}
             <div className="flex flex-col min-w-0 leading-tight">
-              <div className="flex items-center gap-1.5 text-xs">
-                <span className="font-mono font-medium text-[#ffc174] whitespace-nowrap">
-                  {isScanning
-                    ? `${currentFrequency.toFixed(2)} MHz`
-                    : `${activeStation.frequencyDisplay} · ${activeStation.city}`}
+              <div className="flex items-center gap-2 text-xs">
+                <span
+                  className="font-mono font-bold whitespace-nowrap"
+                  style={{ color: palette.accentHex }}
+                >
+                  {isScanning ? `${currentFrequency.toFixed(1)} MHz` : activeStation.frequencyDisplay}
                 </span>
-                <span className="opacity-30 hidden sm:inline">·</span>
-                <span className="font-body opacity-85 truncate hidden sm:inline max-w-[150px]">
+                <span className="opacity-40">·</span>
+                <span
+                  className="font-semibold truncate"
+                  style={{ color: palette.textContrast }}
+                >
                   {activeStation.title}
                 </span>
 
                 <button
                   onClick={onToggleBookmark}
                   title={isBookmarked ? 'Remove Bookmark' : 'Bookmark Station'}
-                  className="p-0.5 text-slate-400 hover:text-[#ffc174] transition-colors"
+                  className="p-0.5 opacity-60 hover:opacity-100 transition-colors"
+                  style={{ color: isBookmarked ? palette.accentHex : palette.textContrast }}
                 >
                   <span className="material-symbols-outlined text-[14px]">
                     {isBookmarked ? 'star' : 'star_outline'}
@@ -217,253 +225,189 @@ export const FloatingPlayerPill: React.FC<FloatingPlayerPillProps> = ({
                 </button>
               </div>
 
-              <span className="font-body text-[11px] opacity-75 truncate max-w-[180px] sm:max-w-[280px]">
-                {isScanning ? 'Tuning frequency carrier...' : activeStation.track || `${activeStation.city}, ${activeStation.country}`}
-              </span>
+              <div
+                className="flex items-center gap-2 text-[11px] truncate font-medium"
+                style={{ color: palette.textMuted }}
+              >
+                <span>{activeStation.city}, {activeStation.country}</span>
+                {activeStation.bitrate && (
+                  <>
+                    <span className="opacity-40">/</span>
+                    <span className="hidden sm:inline">{activeStation.bitrate}</span>
+                  </>
+                )}
+              </div>
             </div>
           </div>
 
-          {/* Right: Zen Wave, Presets toggle, Tools & Volume */}
+          {/* Right: Only Mute / Unmute & Direct Volume Slider & Atmosphere Controls */}
           <div className="flex items-center gap-1.5 flex-shrink-0">
-            {/* 3-bar zen soundwave */}
-            <div
-              className={`hidden sm:flex items-center gap-0.5 h-3 px-1 ${
-                isPlaying && !isMuted ? 'opacity-85' : 'opacity-20'
-              } transition-opacity duration-300`}
-            >
-              <span
-                className={`w-[1.5px] bg-[#4edea3] rounded-full transition-all duration-300 ${
-                  isPlaying && !isMuted ? 'h-3 animate-pulse' : 'h-1'
-                }`}
-              />
-              <span
-                className={`w-[1.5px] bg-[#4edea3]/80 rounded-full transition-all duration-300 ${
-                  isPlaying && !isMuted ? 'h-2 animate-pulse' : 'h-1'
-                }`}
-                style={{ animationDelay: '150ms' }}
-              />
-              <span
-                className={`w-[1.5px] bg-[#4edea3] rounded-full transition-all duration-300 ${
-                  isPlaying && !isMuted ? 'h-3.5 animate-pulse' : 'h-1'
-                }`}
-                style={{ animationDelay: '300ms' }}
-              />
-            </div>
-
             {/* Presets Button */}
             <button
               onClick={() => setShowPresetsBar(!showPresetsBar)}
-              title="Toggle Quick Presets Bar (P1-P6)"
-              className={`flex items-center gap-1 px-2 py-1 rounded-full border transition-all text-[10px] font-mono active:scale-95 ${
-                showPresetsBar
-                  ? 'bg-[#ffc174]/20 border-[#ffc174]/60 text-[#ffc174]'
-                  : 'bg-white/5 hover:bg-white/10 border-white/10 text-white/70 hover:text-white'
-              }`}
+              title="Toggle Presets Drawer"
+              className="px-2 py-1 rounded-lg text-xs font-mono transition-colors"
+              style={{
+                backgroundColor: showPresetsBar ? palette.tagBg : undefined,
+                color: showPresetsBar ? palette.accentHex : palette.textContrast,
+              }}
             >
-              <span className="material-symbols-outlined text-[13px]">bookmarks</span>
-              <span className="hidden md:inline">Presets</span>
-              {favorites.length > 0 && (
-                <span className="text-[9px] px-1 rounded-full bg-[#ffc174]/20 text-[#ffc174]">
-                  {favorites.length}
-                </span>
-              )}
+              Presets
             </button>
 
-            {/* Quick Tools Popup Toggle (Rain, Sleep, Share) */}
+            {/* Dedicated Primary MUTE / UNMUTE BUTTON (No Play/Pause) */}
+            <button
+              onClick={onToggleMute}
+              title={isMuted ? 'Unmute Airwave' : 'Mute Airwave'}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-mono font-semibold transition-all active:scale-95"
+              style={{
+                backgroundColor: isMuted ? 'rgba(239, 68, 68, 0.15)' : palette.tagBg,
+                borderColor: isMuted ? 'rgba(239, 68, 68, 0.4)' : palette.borderColor,
+                color: isMuted ? (isLightMode ? '#dc2626' : '#fca5a5') : palette.accentHex,
+              }}
+              aria-label={isMuted ? 'Unmute broadcast' : 'Mute broadcast'}
+            >
+              <span className="material-symbols-outlined text-[16px]">
+                {isMuted ? 'volume_off' : volume < 0.5 ? 'volume_down' : 'volume_up'}
+              </span>
+              <span>{isMuted ? 'Muted' : 'Live'}</span>
+            </button>
+
+            {/* Volume Popover / Direct Control */}
+            <div className="relative" ref={volumeRef}>
+              <button
+                onClick={() => setShowVolumeSlider(!showVolumeSlider)}
+                title={`Adjust Volume (${Math.round(volume * 100)}%)`}
+                className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                style={{ color: palette.textContrast }}
+              >
+                <span className="material-symbols-outlined text-[17px]">tune</span>
+              </button>
+
+              {showVolumeSlider && (
+                <div
+                  className={`absolute right-0 bottom-10 p-3 rounded-xl border shadow-xl backdrop-blur-2xl flex flex-col items-center gap-2 w-32 animate-in fade-in duration-150 ${
+                    isLightMode
+                      ? 'bg-white/95 border-slate-200 text-slate-800'
+                      : 'bg-[#090d16]/95 border-white/10 text-[#e2e6f0]'
+                  }`}
+                  style={{ borderColor: palette.borderColor }}
+                >
+                  <div className="flex items-center justify-between w-full text-[10px] font-mono opacity-70">
+                    <span>Volume</span>
+                    <span style={{ color: palette.accentHex }}>
+                      {isMuted ? '0%' : `${Math.round(volume * 100)}%`}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={isMuted ? 0 : volume}
+                    onChange={(e) => {
+                      if (isMuted) onToggleMute();
+                      onVolumeChange(parseFloat(e.target.value));
+                    }}
+                    style={{ accentColor: palette.accentHex }}
+                    className="w-full h-1.5 rounded-lg cursor-pointer bg-slate-300 dark:bg-white/20"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Atmosphere Popover */}
             <div className="relative" ref={settingsRef}>
               <button
                 onClick={() => setShowQuickSettings(!showQuickSettings)}
-                title="Audio layers, Sleep timer & Share"
-                className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors text-xs active:scale-95 ${
-                  isRainActive || isVinylActive || sleepMinutesLeft || showQuickSettings
-                    ? 'bg-[#ffc174]/20 text-[#ffc174]'
-                    : 'text-slate-400 hover:text-slate-800 dark:hover:text-white'
-                }`}
+                title="Ambient Soundscape (Night Rain, Vinyl)"
+                className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                style={{
+                  backgroundColor: isRainActive || isVinylActive || showQuickSettings ? palette.tagBg : undefined,
+                  color: isRainActive || isVinylActive || showQuickSettings ? palette.accentHex : palette.textContrast,
+                }}
               >
-                <span className="material-symbols-outlined text-[16px]">more_horiz</span>
+                <span className="material-symbols-outlined text-[17px]">graphic_eq</span>
               </button>
 
               {showQuickSettings && (
                 <div
-                  className={`absolute bottom-10 right-0 p-2 rounded-2xl border backdrop-blur-2xl shadow-2xl flex flex-col gap-1 w-48 z-50 text-[11px] font-mono animate-in fade-in zoom-in-95 duration-100 ${
+                  className={`absolute right-0 bottom-10 p-3 rounded-xl border shadow-xl backdrop-blur-2xl flex flex-col gap-2 w-48 font-mono text-xs animate-in fade-in duration-150 ${
                     isLightMode
-                      ? 'bg-white/95 border-slate-200 text-slate-800 shadow-slate-200/60'
-                      : 'bg-[#090d16]/95 border-white/15 text-[#e2e6f0] shadow-black/80'
+                      ? 'bg-white/95 border-slate-200 text-slate-800'
+                      : 'bg-[#090d16]/95 border-white/10 text-[#e2e6f0]'
                   }`}
+                  style={{ borderColor: palette.borderColor }}
                 >
-                  <div className="text-[9px] font-semibold tracking-wider uppercase opacity-50 px-2 py-0.5">
-                    Sound Layers
-                  </div>
-
+                  <span className="text-[10px] uppercase opacity-50 font-semibold">Soundscape</span>
                   <button
                     onClick={onToggleRain}
-                    className={`flex items-center justify-between px-2.5 py-1.5 rounded-xl transition-colors ${
-                      isRainActive
-                        ? 'bg-[#4edea3]/20 text-[#059669] dark:text-[#4edea3] font-semibold'
-                        : 'opacity-70 hover:opacity-100 hover:bg-white/5'
+                    className={`flex items-center justify-between p-1.5 rounded-lg transition-colors ${
+                      isRainActive ? 'bg-white/20 text-white' : 'hover:bg-white/10 opacity-70 hover:opacity-100'
                     }`}
                   >
                     <span className="flex items-center gap-1.5">
-                      <span className="material-symbols-outlined text-[14px]">water_drop</span>
-                      Night Rain
+                      <span className="material-symbols-outlined text-[14px]">rainy</span>
+                      <span>Night Rain</span>
                     </span>
                     <span className="text-[10px]">{isRainActive ? 'ON' : 'OFF'}</span>
                   </button>
 
                   <button
                     onClick={onToggleVinyl}
-                    className={`flex items-center justify-between px-2.5 py-1.5 rounded-xl transition-colors ${
-                      isVinylActive
-                        ? 'bg-[#ffc174]/20 text-[#d97706] dark:text-[#ffc174] font-semibold'
-                        : 'opacity-70 hover:opacity-100 hover:bg-white/5'
+                    className={`flex items-center justify-between p-1.5 rounded-lg transition-colors ${
+                      isVinylActive ? 'bg-white/20 text-white' : 'hover:bg-white/10 opacity-70 hover:opacity-100'
                     }`}
                   >
                     <span className="flex items-center gap-1.5">
                       <span className="material-symbols-outlined text-[14px]">album</span>
-                      Vinyl Warmth
+                      <span>Vinyl Crackle</span>
                     </span>
                     <span className="text-[10px]">{isVinylActive ? 'ON' : 'OFF'}</span>
                   </button>
 
-                  <div className="h-[1px] bg-white/10 my-0.5" />
-
                   <button
-                    onClick={() => {
-                      onOpenAudioSettings();
-                      setShowQuickSettings(false);
-                    }}
-                    className="flex items-center justify-between px-2.5 py-1.5 rounded-xl opacity-75 hover:opacity-100 hover:bg-white/5 transition-colors"
+                    onClick={onOpenAudioSettings}
+                    className="flex items-center gap-1.5 p-1.5 rounded-lg hover:bg-white/10 text-left opacity-70 hover:opacity-100 pt-1"
                   >
-                    <span className="flex items-center gap-1.5">
-                      <span className="material-symbols-outlined text-[14px]">tune</span>
-                      DSP Hardware EQ
-                    </span>
-                    <span className="material-symbols-outlined text-[12px]">chevron_right</span>
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      onSetSleepTimer(sleepMinutesLeft ? null : 30);
-                    }}
-                    className={`flex items-center justify-between px-2.5 py-1.5 rounded-xl transition-colors ${
-                      sleepMinutesLeft
-                        ? 'bg-[#4edea3]/20 text-[#059669] dark:text-[#4edea3] font-semibold'
-                        : 'opacity-70 hover:opacity-100 hover:bg-white/5'
-                    }`}
-                  >
-                    <span className="flex items-center gap-1.5">
-                      <span className="material-symbols-outlined text-[14px]">bedtime</span>
-                      Sleep Timer
-                    </span>
-                    <span className="text-[10px]">{sleepMinutesLeft ? `${sleepMinutesLeft}m` : 'OFF'}</span>
-                  </button>
-
-                  <button
-                    onClick={handleCopyLink}
-                    className="flex items-center justify-between px-2.5 py-1.5 rounded-xl opacity-75 hover:opacity-100 hover:bg-white/5 transition-colors"
-                  >
-                    <span className="flex items-center gap-1.5">
-                      <span className="material-symbols-outlined text-[14px]">share</span>
-                      <span>{copiedLink ? 'Link Copied!' : 'Share Station'}</span>
-                    </span>
-                    <span className="material-symbols-outlined text-[13px]">
-                      {copiedLink ? 'check' : 'content_copy'}
-                    </span>
+                    <span className="material-symbols-outlined text-[14px]">equalizer</span>
+                    <span>DSP Settings</span>
                   </button>
                 </div>
               )}
             </div>
 
-            {/* Volume Control */}
-            <div className="relative flex items-center" ref={volumeRef}>
-              {showVolumeSlider && (
-                <div
-                  className={`absolute bottom-9 right-0 p-2.5 rounded-2xl border backdrop-blur-2xl shadow-2xl flex items-center gap-2 w-32 z-50 animate-in fade-in zoom-in-95 duration-100 ${
-                    isLightMode ? 'bg-white/95 border-slate-200' : 'bg-[#090d16]/95 border-white/15'
-                  }`}
-                >
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.02"
-                    value={isMuted ? 0 : volume}
-                    onChange={(e) => onVolumeChange(parseFloat(e.target.value))}
-                    className="w-full h-1 bg-black/10 dark:bg-white/20 rounded-full appearance-none cursor-pointer accent-[#ffc174]"
-                  />
-                </div>
-              )}
-
-              <button
-                onClick={() => setShowVolumeSlider(!showVolumeSlider)}
-                className="w-7 h-7 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-800 dark:hover:text-white transition-colors focus:outline-none"
-                aria-label={isMuted ? 'Unmute' : 'Mute'}
-              >
-                <span
-                  className={`material-symbols-outlined text-[17px] ${
-                    isMuted ? 'text-[#ffc174]' : ''
-                  }`}
-                >
-                  {isMuted || volume === 0
-                    ? 'volume_off'
-                    : volume < 0.5
-                    ? 'volume_down'
-                    : 'volume_up'}
-                </span>
-              </button>
-            </div>
+            {/* Share / Copy link */}
+            <button
+              onClick={handleCopyLink}
+              title={copiedLink ? 'Link Copied!' : 'Share Station'}
+              className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+              style={{ color: palette.textContrast }}
+            >
+              <span className="material-symbols-outlined text-[17px]">
+                {copiedLink ? 'check' : 'share'}
+              </span>
+            </button>
           </div>
         </div>
 
-        {/* Razor-Thin Hairline Micro-Scrubber Track */}
-        <div className="relative w-full flex flex-col pt-0 group/scrub">
-          <div className="relative w-full h-1 pointer-events-none mb-0.5">
-            {stations.slice(0, 24).map((st) => {
-              const minFreq = 80.0;
-              const maxFreq = 108.0;
-              const pct = ((st.frequency - minFreq) / (maxFreq - minFreq)) * 100;
-              const isCurrent = Math.abs(currentFrequency - st.frequency) < 0.2;
-
-              if (pct < 0 || pct > 100) return null;
-
-              return (
-                <div
-                  key={st.id}
-                  style={{ left: `${pct}%` }}
-                  className={`absolute top-0 w-[1.5px] h-1 -translate-x-1/2 transition-colors ${
-                    isCurrent
-                      ? 'bg-[#ffc174] h-1.5 shadow-[0_0_4px_#ffc174]'
-                      : isLightMode
-                      ? 'bg-slate-300'
-                      : 'bg-white/15'
-                  }`}
-                  title={`${st.title} (${st.frequencyDisplay})`}
-                />
-              );
-            })}
+        {/* Bottom Micro Frequency Scrubber Dial */}
+        <div className="flex items-center gap-2 pt-0.5">
+          <span className="font-mono text-[10px] opacity-40">88.0</span>
+          <div className="relative flex-1 flex items-center">
+            <input
+              type="range"
+              min="88.0"
+              max="108.0"
+              step="0.1"
+              value={currentFrequency}
+              onChange={(e) => onScrubFrequency(parseFloat(e.target.value))}
+              aria-label="Frequency tuning dial"
+              style={{ accentColor: palette.accentHex }}
+              className="w-full h-1 rounded-lg cursor-pointer bg-white/10 hover:bg-white/20 transition-colors"
+            />
           </div>
-
-          <input
-            type="range"
-            min="80.00"
-            max="108.00"
-            step="0.05"
-            value={currentFrequency}
-            onChange={(e) => onScrubFrequency(parseFloat(e.target.value))}
-            className={`w-full h-[2px] rounded-full appearance-none cursor-pointer accent-[#ffc174] focus:outline-none transition-all ${
-              isLightMode
-                ? 'bg-slate-200 group-hover/scrub:bg-slate-300'
-                : 'bg-white/[0.08] group-hover/scrub:bg-white/[0.14]'
-            }`}
-            aria-label="Frequency tuning scrubber"
-          />
-
-          <div className="flex justify-between items-center text-[8px] font-mono opacity-40 px-0.5 pt-0.5">
-            <span>80.0</span>
-            <span>90.0</span>
-            <span>100.0</span>
-            <span>108.0 MHz</span>
-          </div>
+          <span className="font-mono text-[10px] opacity-40">108.0</span>
         </div>
       </div>
     </div>

@@ -35,24 +35,24 @@ class AnalyticsService {
         transport_type: 'beacon',
       });
 
-      // Inject gtag.js script if not present
-      const scriptId = 'google-analytics-gtag';
-      if (!document.getElementById(scriptId)) {
-        const script = document.createElement('script');
-        script.id = scriptId;
-        script.async = true;
-        script.src = `https://www.googletagmanager.com/gtag/js?id=${GA_MEASUREMENT_ID}`;
-        script.onerror = () => {
-          // Gracefully continue if adblocker blocks GA script
-          console.debug('[Analytics] GA script blocked or offline, fallback event logging active.');
-        };
-        document.head.appendChild(script);
+      // Only inject external script if custom measurement ID is provided and not default placeholder
+      if (GA_MEASUREMENT_ID && GA_MEASUREMENT_ID !== 'G-RADIOATLAS1') {
+        const scriptId = 'google-analytics-gtag';
+        if (!document.getElementById(scriptId)) {
+          const script = document.createElement('script');
+          script.id = scriptId;
+          script.async = true;
+          script.src = `https://www.googletagmanager.com/gtag/js?id=${GA_MEASUREMENT_ID}`;
+          script.onerror = () => {
+            // Silently fallback to internal telemetry log
+          };
+          document.head.appendChild(script);
+        }
       }
 
       this.initialized = true;
-      console.log(`[Analytics] Google Analytics initialized (${GA_MEASUREMENT_ID})`);
-    } catch (err) {
-      console.debug('[Analytics] Initialization error:', err);
+    } catch {
+      // Ignore
     }
   }
 
@@ -74,8 +74,8 @@ class AnalyticsService {
           client_timestamp: Date.now(),
         });
       }
-    } catch (err) {
-      console.debug('[Analytics] Error tracking event:', err);
+    } catch {
+      // Ignore
     }
   }
 

@@ -201,8 +201,8 @@ Respond with a raw JSON object ONLY, no markdown:
           this.isAnalyzing = false;
           return profile;
         }
-      } catch (err) {
-        console.warn('Direct client Gemini call error, falling back to spectral analysis:', err);
+      } catch {
+        // Fall back gracefully to spectral analysis
       }
     }
 

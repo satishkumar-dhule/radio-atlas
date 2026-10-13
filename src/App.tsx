@@ -1,31 +1,21 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   RADIO_GARDEN_STATIONS,
   FEATURED_STATIONS,
-  RADIO_GARDEN_PLACES,
   RADIO_GARDEN_ALL_PLACES,
 } from './data/stations';
 import { Station } from './types/radio';
 import { audioEngine, EqPreset } from './services/audioEngine';
 import { ambientFx } from './services/ambientFx';
-import { geminiDspService, DspMasterProfile } from './services/geminiDspService';
-import { WallpaperId, SkinThemeId } from './types/wallpaper';
+import { generateStationTheme } from './utils/themeFormula';
 
-import { TopBar } from './components/TopBar';
 import { WorldMap } from './components/WorldMap';
 import { FloatingPlayerPill } from './components/FloatingPlayerPill';
-import { WallpaperBackdrop } from './components/WallpaperBackdrop';
-import { WallpaperModal } from './components/WallpaperModal';
 import { ScreensaverView } from './components/ScreensaverView';
-import { DXLogbookModal, DxLogEntry } from './components/DXLogbookModal';
-import { AudioSettingsModal } from './components/AudioSettingsModal';
-import { OscilloscopeModal } from './components/OscilloscopeModal';
-import { StationDirectoryDrawer } from './components/StationDirectoryDrawer';
 import { QuickSearchModal } from './components/QuickSearchModal';
 import { BookmarksDrawer } from './components/BookmarksDrawer';
-import { AnalyticsModal } from './components/AnalyticsModal';
+import { AudioSettingsModal } from './components/AudioSettingsModal';
 import { analytics } from './services/analytics';
-import { getStationAtmosphere } from './utils/stationAtmosphere';
 
 export default function App() {
   const [allStations] = useState<Station[]>(RADIO_GARDEN_STATIONS);
@@ -40,19 +30,15 @@ export default function App() {
         const matched = RADIO_GARDEN_STATIONS.find((s) => s.id === id);
         if (matched) return matched;
       }
-    } catch {
-      // ignore
-    }
+    } catch {}
     return FEATURED_STATIONS[0] || RADIO_GARDEN_STATIONS[0];
   };
 
   const [activeStation, setActiveStation] = useState<Station>(getInitialStation);
   const [currentFrequency, setCurrentFrequency] = useState<number>(activeStation.frequency);
-  const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [volume, setVolume] = useState<number>(0.75);
 
-  // Theme & Wallpaper state
   const [isLightMode, setIsLightMode] = useState<boolean>(() => {
     try {
       return localStorage.getItem('radio_atlas_theme') === 'light';
@@ -61,45 +47,22 @@ export default function App() {
     }
   });
 
-  const [currentWallpaper, setCurrentWallpaper] = useState<WallpaperId>(() => {
-    try {
-      const saved = localStorage.getItem('radio_atlas_wallpaper') as WallpaperId;
-      return saved || 'obsidian';
-    } catch {
-      return 'obsidian';
-    }
-  });
+  // UNLIMITED PRECISE DYNAMIC HIGH-CONTRAST PALETTE FORMULA PER STATION
+  const stationPalette = useMemo(() => {
+    const lat = activeStation.coordinates?.lat ?? 0;
+    const lng = activeStation.coordinates?.lng ?? 0;
+    return generateStationTheme(
+      activeStation.id,
+      activeStation.city,
+      lat,
+      lng,
+      activeStation.frequency,
+      isLightMode
+    );
+  }, [activeStation, isLightMode]);
 
-  const [currentSkin, setCurrentSkin] = useState<SkinThemeId>(() => {
-    try {
-      const saved = localStorage.getItem('radio_atlas_skin') as SkinThemeId;
-      return saved || 'amber';
-    } catch {
-      return 'amber';
-    }
-  });
-
-  const handleSelectSkin = (skin: SkinThemeId) => {
-    setCurrentSkin(skin);
-    try {
-      localStorage.setItem('radio_atlas_skin', skin);
-    } catch {}
-    analytics.trackSkinOrWallpaper(currentWallpaper, skin);
-  };
-
-  // Centralized Active Modal & Dock Management (Mutual Exclusive Architecture)
-  type ActiveModalId =
-    | null
-    | 'directory'
-    | 'search'
-    | 'bookmarks'
-    | 'wallpapers'
-    | 'logbook'
-    | 'audio_settings'
-    | 'analytics'
-    | 'screensaver'
-    | 'oscilloscope';
-
+  // Streamlined Modals: search, presets, audio, screensaver
+  type ActiveModalId = null | 'search' | 'bookmarks' | 'audio_settings' | 'screensaver';
   const [activeModal, setActiveModal] = useState<ActiveModalId>(null);
   const [isZenMode, setIsZenMode] = useState<boolean>(false);
 
@@ -111,148 +74,91 @@ export default function App() {
     setActiveModal(null);
   }, []);
 
-  // Close overlays on Escape key
+  // Continuous background playback (radio plays automatically on load and user gesture)
+  useEffect(() => {
+    const startAudio = () => {
+      audioEngine.play(activeStation, currentFrequency).catch(() => {});
+    };
+
+    startAudio();
+
+    const unlockAudio = () => {
+      startAudio();
+      window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+    };
+
+    window.addEventListener('click', unlockAudio, { once: true });
+    window.addEventListener('keydown', unlockAudio, { once: true });
+
+    return () => {
+      window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+    };
+  }, []);
+
+  // Global keyboard shortcuts: Space (mute/unmute), Cmd+K (search), Esc (close), Z (zen)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
       if (e.key === 'Escape') {
         closeAllOverlays();
+      } else if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        toggleModal('search');
+      } else if (e.key === ' ' && !e.repeat) {
+        e.preventDefault();
+        handleToggleMute();
+      } else if (e.key === 'z' || e.key === 'Z') {
+        e.preventDefault();
+        setIsZenMode((prev) => !prev);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [closeAllOverlays]);
+  }, [closeAllOverlays, toggleModal, isMuted]);
 
-  // DSP & Atmosphere state
+  // Audio DSP & Ambient Soundscape
   const [activeEqPreset, setActiveEqPreset] = useState<EqPreset>('tube');
   const [isRainActive, setIsRainActive] = useState<boolean>(false);
   const [isVinylActive, setIsVinylActive] = useState<boolean>(false);
   const [isCosmicActive, setIsCosmicActive] = useState<boolean>(false);
-  const [isPhotoEnabled, setIsPhotoEnabled] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem('radio_atlas_photo');
-      return saved !== 'false';
-    } catch {
-      return true;
-    }
-  });
 
-  const handleTogglePhoto = () => {
-    setIsPhotoEnabled((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem('radio_atlas_photo', String(next));
-      } catch {}
-      return next;
-    });
-  };
-
-  // Gemini AI DSP Auto-Master state
-  const [isAiDspEnabled, setIsAiDspEnabled] = useState<boolean>(() => geminiDspService.isEnabled());
-  const [dspProfile, setDspProfile] = useState<DspMasterProfile | null>(null);
-  const [showAiDspToast, setShowAiDspToast] = useState<boolean>(false);
-
-  const handleTriggerAiDsp = useCallback((targetStation?: Station) => {
-    const st = targetStation || activeStation;
-    geminiDspService.autoMasterStation(st).then((prof) => {
-      setDspProfile(prof);
-      setActiveEqPreset(prof.eqPreset);
-      setShowAiDspToast(true);
-      setTimeout(() => setShowAiDspToast(false), 4500);
-    });
-  }, [activeStation]);
-
-  const handleToggleAiDsp = () => {
-    setIsAiDspEnabled((prev) => {
-      const next = !prev;
-      geminiDspService.setEnabled(next);
-      if (next) {
-        handleTriggerAiDsp();
-      }
-      return next;
-    });
-  };
-
-  // Sleep timer state
-  const [sleepMinutesLeft, setSleepMinutesLeft] = useState<number | null>(null);
-
-  // DX Quick Log feedback state
-  const [hasJustLogged, setHasJustLogged] = useState<boolean>(false);
-
-  // Bookmarks / Presets
+  // Favorites
   const [favorites, setFavorites] = useState<string[]>(() => {
     try {
-      const saved = localStorage.getItem('radio_atlas_favorites');
+      const saved = localStorage.getItem('radio_atlas_favs');
       return saved ? JSON.parse(saved) : [FEATURED_STATIONS[0]?.id || ''];
     } catch {
       return [];
     }
   });
 
-  // Sync theme class on <html> element
-  useEffect(() => {
-    if (isLightMode) {
-      document.documentElement.classList.remove('dark');
-      try {
-        localStorage.setItem('radio_atlas_theme', 'light');
-      } catch {}
-    } else {
-      document.documentElement.classList.add('dark');
-      try {
-        localStorage.setItem('radio_atlas_theme', 'dark');
-      } catch {}
-    }
-  }, [isLightMode]);
-
-  // Sync wallpaper in localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem('radio_atlas_wallpaper', currentWallpaper);
-    } catch {}
-  }, [currentWallpaper]);
-
-  const toggleTheme = () => {
-    setIsLightMode((prev) => {
-      const next = !prev;
-      if (next && (currentWallpaper === 'obsidian' || currentWallpaper === 'constellations')) {
-        setCurrentWallpaper('blueprint');
-      } else if (!next && (currentWallpaper === 'blueprint' || currentWallpaper === 'solar_dawn')) {
-        setCurrentWallpaper('obsidian');
-      }
-      return next;
-    });
-  };
-
-  const handleSelectWallpaper = (id: WallpaperId) => {
-    setCurrentWallpaper(id);
-    if (id === 'blueprint' || id === 'solar_dawn') {
-      setIsLightMode(true);
-    } else {
-      setIsLightMode(false);
-    }
-  };
-
-  const toggleFavorite = (id: string) => {
+  const toggleFavorite = (stationId: string) => {
     setFavorites((prev) => {
-      const updated = prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id];
+      const updated = prev.includes(stationId)
+        ? prev.filter((id) => id !== stationId)
+        : [...prev, stationId];
       try {
-        localStorage.setItem('radio_atlas_favorites', JSON.stringify(updated));
+        localStorage.setItem('radio_atlas_favs', JSON.stringify(updated));
       } catch {}
       return updated;
     });
   };
 
-  // Change to specific station
+  // Change to specific station (always starts playing immediately)
   const handleSelectStation = useCallback(
     (station: Station) => {
       setActiveStation(station);
       setCurrentFrequency(station.frequency);
 
-      // Update URL hash for permalink sharing
       try {
         window.history.replaceState(null, '', `#station=${station.id}`);
       } catch {}
 
-      // Ensure station is in featured list
       setFeaturedStations((prev) => {
         if (!prev.some((s) => s.id === station.id)) {
           return [station, ...prev.slice(0, 24)];
@@ -260,306 +166,276 @@ export default function App() {
         return prev;
       });
 
-      // Clicking on station point should immediately play the station live
-      audioEngine.play(station, station.frequency).then(() => {
-        setIsPlaying(true);
-      }).catch((e) => {
-        console.warn('Playback error:', e);
-      });
+      // Always play new station
+      audioEngine.play(station, station.frequency).catch(() => {});
 
-      if (isAiDspEnabled) {
-        handleTriggerAiDsp(station);
-      }
-
-      // Close open modals so user immediately returns to map/music
       setActiveModal(null);
-
       analytics.trackStationTune(station, 'preset');
     },
-    [isAiDspEnabled, handleTriggerAiDsp]
+    []
   );
-
-  // Toggle play/pause
-  const handleTogglePlay = async () => {
-    if (isPlaying) {
-      audioEngine.pause();
-      setIsPlaying(false);
-      analytics.trackPlayback('pause', { station_id: activeStation.id, title: activeStation.title });
-    } else {
-      await audioEngine.play(activeStation, currentFrequency);
-      setIsPlaying(true);
-      analytics.trackPlayback('play', { station_id: activeStation.id, title: activeStation.title });
-    }
-  };
 
   const handleToggleMute = () => {
     const nextMuted = !isMuted;
     setIsMuted(nextMuted);
     audioEngine.setMute(nextMuted);
+    analytics.trackPlayback(nextMuted ? 'pause' : 'play', {
+      station_id: activeStation.id,
+      title: activeStation.title,
+    });
   };
 
-  const handleVolumeChange = (newVol: number) => {
-    setVolume(newVol);
-    analytics.trackPlayback('volume_change', { volume: newVol });
-    if (isMuted && newVol > 0) {
+  const handleVolumeChange = (vol: number) => {
+    setVolume(vol);
+    if (isMuted && vol > 0) {
       setIsMuted(false);
       audioEngine.setMute(false);
     }
-    audioEngine.setVolume(newVol);
+    audioEngine.setVolume(vol);
   };
 
   const handleScrubFrequency = (freq: number) => {
     setCurrentFrequency(freq);
-
-    const nearest = allStations.find((st) => Math.abs(st.frequency - freq) <= 0.25);
-    if (nearest && nearest.id !== activeStation.id) {
-      setActiveStation(nearest);
-      setFeaturedStations((prev) => {
-        if (!prev.some((s) => s.id === nearest.id)) {
-          return [nearest, ...prev.slice(0, 24)];
-        }
-        return prev;
-      });
-    }
-
-    if (isPlaying) {
-      audioEngine.tuneFrequency(
-        freq,
-        nearest ? nearest.frequency : activeStation.frequency,
-        nearest || activeStation
-      );
-    }
+    audioEngine.tuneFrequency(freq, activeStation.frequency, activeStation);
   };
 
   const handleDrift = () => {
-    const others = allStations.filter((st) => st.id !== activeStation.id);
-    const randomStation = others[Math.floor(Math.random() * others.length)] || allStations[0];
+    const pool = allStations.length > 0 ? allStations : featuredStations;
+    const available = pool.filter((s) => s.id !== activeStation.id);
+    if (available.length === 0) return;
+    const randomStation = available[Math.floor(Math.random() * available.length)];
     handleSelectStation(randomStation);
-
-    if (!isPlaying) {
-      audioEngine.play(randomStation, randomStation.frequency);
-      setIsPlaying(true);
-    }
-  };
-
-  // Atmosphere Soundscapes
-  const handleToggleRain = () => {
-    const ctx = audioEngine.getAudioContext();
-    if (ctx) {
-      const next = ambientFx.toggleRain(ctx);
-      setIsRainActive(next);
-    }
-  };
-
-  const handleToggleVinyl = () => {
-    const ctx = audioEngine.getAudioContext();
-    if (ctx) {
-      const next = ambientFx.toggleVinyl(ctx);
-      setIsVinylActive(next);
-    }
-  };
-
-  const handleToggleCosmic = () => {
-    const ctx = audioEngine.getAudioContext();
-    if (ctx) {
-      const next = ambientFx.toggleCosmic(ctx);
-      setIsCosmicActive(next);
-    }
-  };
-
-  // Cycle DSP EQ preset
-  const handleCycleEqPreset = () => {
-    const order: EqPreset[] = ['tube', 'lofi', 'deepbass', 'clean'];
-    const nextIdx = (order.indexOf(activeEqPreset) + 1) % order.length;
-    const nextPreset = order[nextIdx];
-    setActiveEqPreset(nextPreset);
-    audioEngine.setEqPreset(nextPreset);
   };
 
   const handleSelectEqPreset = (preset: EqPreset) => {
     setActiveEqPreset(preset);
     audioEngine.setEqPreset(preset);
+    analytics.trackDspPreset(preset, false);
   };
 
-  // Quick 1-click DX Log
-  const handleQuickLogDx = () => {
-    const now = new Date();
-    const hrs = String(now.getUTCHours()).padStart(2, '0');
-    const mins = String(now.getUTCMinutes()).padStart(2, '0');
+  const handleToggleRain = () => {
+    const ctx = audioEngine.getAudioContext() || undefined;
+    const active = ambientFx.toggleRain(ctx);
+    setIsRainActive(active);
+  };
 
+  const handleToggleVinyl = () => {
+    const ctx = audioEngine.getAudioContext() || undefined;
+    const active = ambientFx.toggleVinyl(ctx);
+    setIsVinylActive(active);
+  };
+
+  const handleToggleCosmic = () => {
+    const ctx = audioEngine.getAudioContext() || undefined;
+    const active = ambientFx.toggleCosmic(ctx);
+    setIsCosmicActive(active);
+  };
+
+  const toggleTheme = () => {
+    const next = !isLightMode;
+    setIsLightMode(next);
     try {
-      const saved = localStorage.getItem('radio_atlas_dx_logs');
-      const existing: DxLogEntry[] = saved ? JSON.parse(saved) : [];
-
-      const newEntry: DxLogEntry = {
-        id: Date.now().toString(),
-        stationId: activeStation.id,
-        stationTitle: activeStation.title,
-        city: activeStation.city,
-        country: activeStation.country,
-        frequencyDisplay: activeStation.frequencyDisplay,
-        timestamp: now.toISOString(),
-        utcTime: `${hrs}:${mins} UTC`,
-        distanceKm: Math.round(
-          Math.hypot(
-            (activeStation.coordinates?.lat ?? 0) - 35.68,
-            (activeStation.coordinates?.lng ?? 0) - 139.69
-          ) * 111
-        ),
-        snr: `${(44 + Math.random() * 6).toFixed(1)} dB`,
-        notes: `Quick intercepted carrier at ${activeStation.frequencyDisplay}.`,
-      };
-
-      localStorage.setItem('radio_atlas_dx_logs', JSON.stringify([newEntry, ...existing]));
-      setHasJustLogged(true);
-      setTimeout(() => setHasJustLogged(false), 2000);
+      localStorage.setItem('radio_atlas_theme', next ? 'light' : 'dark');
     } catch {}
+    if (next) {
+      document.documentElement.classList.remove('dark');
+    } else {
+      document.documentElement.classList.add('dark');
+    }
   };
 
-  // Sleep timer interval
+  // Sleep Timer
+  const [sleepMinutesLeft, setSleepMinutesLeft] = useState<number | null>(null);
+
   useEffect(() => {
     if (!sleepMinutesLeft) return;
-
     const interval = setInterval(() => {
       setSleepMinutesLeft((prev) => {
         if (!prev || prev <= 1) {
-          audioEngine.pause();
-          setIsPlaying(false);
+          setIsMuted(true);
+          audioEngine.setMute(true);
           return null;
         }
         return prev - 1;
       });
     }, 60000);
-
     return () => clearInterval(interval);
   }, [sleepMinutesLeft]);
 
-  // Global Keyboard Shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-        return;
-      }
-
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        e.preventDefault();
-        toggleModal('search');
-      } else if (e.key === '/') {
-        e.preventDefault();
-        toggleModal('search');
-      } else if (e.code === 'Space') {
-        e.preventDefault();
-        handleTogglePlay();
-      } else if (e.key === 'd' || e.key === 'D') {
-        handleDrift();
-      } else if (e.key === 'b' || e.key === 'B') {
-        toggleModal('bookmarks');
-      } else if (e.key === 'l' || e.key === 'L') {
-        toggleModal('logbook');
-      } else if (e.key === 'z' || e.key === 'Z') {
-        setIsZenMode((prev) => !prev);
-      } else if (e.key === 't' || e.key === 'T') {
-        toggleTheme();
-      } else if (e.key === 'm' || e.key === 'M') {
-        handleToggleMute();
-      } else if (e.key === 'o' || e.key === 'O') {
-        toggleModal('oscilloscope');
-      } else if (['1', '2', '3', '4', '5', '6'].includes(e.key)) {
-        const presetIndex = parseInt(e.key, 10) - 1;
-        const bookmarked = allStations.filter((s) => favorites.includes(s.id));
-        if (bookmarked[presetIndex]) {
-          handleSelectStation(bookmarked[presetIndex]);
-        }
-      } else if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        const nextFreq = Math.min(108.0, Math.round((currentFrequency + 0.1) * 100) / 100);
-        handleScrubFrequency(nextFreq);
-      } else if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        const prevFreq = Math.max(80.0, Math.round((currentFrequency - 0.1) * 100) / 100);
-        handleScrubFrequency(prevFreq);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isPlaying, currentFrequency, activeStation, allStations, favorites, handleSelectStation]);
-
   return (
     <div
-      className={`font-body select-none w-screen h-screen relative flex flex-col justify-between overflow-hidden antialiased transition-colors duration-500 ${
-        isLightMode ? 'bg-[#f4f5f8] text-slate-800' : 'bg-[#080b11] text-[#e2e6f0]'
+      className={`relative w-screen h-screen overflow-hidden flex flex-col select-none transition-colors duration-500 ${
+        isLightMode ? 'bg-[#f4f6fa] text-slate-800' : 'bg-[#080b11] text-[#e2e6f0]'
       }`}
+      style={{
+        backgroundColor: isLightMode ? '#f8fafc' : '#080b11',
+      }}
     >
-      {/* CHANNEL-REACTIVE ATMOSPHERIC BACKDROP (Changes color & photo on every channel change!) */}
-      <WallpaperBackdrop
-        wallpaper={currentWallpaper}
-        isLightMode={isLightMode}
-        activeStation={activeStation}
-        isPhotoEnabled={isPhotoEnabled}
-      />
+      {/* 1. STATE-OF-THE-ART MINIMALIST FLOATING HEADER (Dynamically Contrasted) */}
+      {!isZenMode && (
+        <header className="absolute top-0 left-0 right-0 z-30 px-5 sm:px-8 py-4 flex items-center justify-between pointer-events-none">
+          {/* Brand & Active Station */}
+          <div
+            className="flex items-center gap-3.5 pointer-events-auto backdrop-blur-xl border px-3.5 py-1.5 rounded-xl shadow-lg transition-all duration-500"
+            style={{
+              backgroundColor: isLightMode ? 'rgba(255,255,255,0.92)' : 'rgba(9, 13, 22, 0.88)',
+              borderColor: stationPalette.borderColor,
+              boxShadow: `0 4px 20px rgba(0,0,0,0.5), 0 0 16px ${stationPalette.accentMuted}`,
+            }}
+          >
+            <span
+              className="w-2.5 h-2.5 rounded-full transition-transform duration-300 animate-pulse"
+              style={{
+                backgroundColor: isMuted ? 'rgba(255,255,255,0.4)' : stationPalette.accentHex,
+                boxShadow: isMuted ? 'none' : `0 0 10px ${stationPalette.accentHex}`,
+              }}
+            />
+            <span
+              className="text-xs sm:text-sm font-semibold tracking-wider uppercase"
+              style={{ color: stationPalette.textContrast }}
+            >
+              Radio Atlas
+            </span>
+            <span
+              className="opacity-30 font-mono text-xs hidden sm:inline"
+              style={{ color: stationPalette.textContrast }}
+            >
+              /
+            </span>
+            <span
+              className="text-xs font-mono font-semibold hidden sm:inline truncate max-w-[220px]"
+              style={{ color: stationPalette.accentHex }}
+            >
+              {activeStation.city}, {activeStation.country}
+            </span>
+          </div>
 
-      {/* MINIMAL TOP BAR */}
-      <TopBar
-        activeStation={activeStation}
-        onDrift={handleDrift}
-        onOpenDirectory={() => toggleModal('directory')}
-        onOpenQuickSearch={() => toggleModal('search')}
-        onOpenBookmarks={() => toggleModal('bookmarks')}
-        onOpenWallpapers={() => toggleModal('wallpapers')}
-        onOpenDxLogbook={() => toggleModal('logbook')}
-        onOpenAudioSettings={() => toggleModal('audio_settings')}
-        bookmarksCount={favorites.length}
-        onToggleOscilloscope={() => toggleModal('oscilloscope')}
-        isOscilloscopeOpen={activeModal === 'oscilloscope'}
-        isPlaying={isPlaying}
-        isLightMode={isLightMode}
-        onToggleTheme={toggleTheme}
-        isZenMode={isZenMode}
-        onToggleZenMode={() => setIsZenMode((prev) => !prev)}
-        onOpenAnalytics={() => toggleModal('analytics')}
-        onOpenScreensaver={() => toggleModal('screensaver')}
-        activeModal={activeModal}
-      />
+          {/* Quick Actions */}
+          <div
+            className="flex items-center gap-2 pointer-events-auto backdrop-blur-xl border p-1 rounded-xl shadow-lg text-xs font-mono transition-all duration-500"
+            style={{
+              backgroundColor: isLightMode ? 'rgba(255,255,255,0.95)' : 'rgba(9, 13, 22, 0.90)',
+              borderColor: stationPalette.borderColor,
+              color: stationPalette.textContrast,
+            }}
+          >
+            {/* Search */}
+            <button
+              onClick={() => toggleModal('search')}
+              title="Search worldwide stations (⌘K)"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+              style={{ color: stationPalette.textContrast }}
+            >
+              <span className="material-symbols-outlined text-[15px]">search</span>
+              <span className="hidden md:inline">Search</span>
+              <kbd
+                className="hidden lg:inline text-[9px] px-1 py-0.5 rounded border border-current opacity-60"
+              >
+                ⌘K
+              </kbd>
+            </button>
 
-      {/* GEMINI AI DSP AUTO-MASTER HUD TOAST */}
-      {showAiDspToast && dspProfile && (
-        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-3.5 py-1.5 rounded-full border shadow-2xl backdrop-blur-xl animate-in fade-in slide-in-from-top-2 duration-300 bg-purple-950/85 border-purple-500/40 text-purple-200 text-xs font-mono select-none pointer-events-none">
-          <span className="material-symbols-outlined text-[15px] text-[#ffc174] animate-pulse">
-            psychology
-          </span>
-          <span className="font-semibold text-[#ffc174] uppercase text-[10px]">
-            AI Master: {dspProfile.eqPreset}
-          </span>
-          <span className="opacity-40">·</span>
-          <span className="truncate max-w-[280px] sm:max-w-md text-[10px] opacity-90">
-            {dspProfile.rationale}
-          </span>
+            {/* Drift / Random */}
+            <button
+              onClick={handleDrift}
+              title="Drift to random airwave"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition-colors group"
+              style={{ color: stationPalette.textContrast }}
+            >
+              <span className="material-symbols-outlined text-[15px] group-hover:rotate-90 transition-transform">
+                shuffle
+              </span>
+              <span className="hidden sm:inline">Drift</span>
+            </button>
+
+            {/* Presets */}
+            <button
+              onClick={() => toggleModal('bookmarks')}
+              title="Saved Presets"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+              style={{ color: stationPalette.textContrast }}
+            >
+              <span
+                className="material-symbols-outlined text-[15px]"
+                style={{ color: stationPalette.accentHex }}
+              >
+                star
+              </span>
+              <span className="hidden sm:inline">Presets</span>
+              {favorites.length > 0 && (
+                <span className="text-[10px] opacity-70">({favorites.length})</span>
+              )}
+            </button>
+
+            {/* Screensaver with Analogue Clocks */}
+            <button
+              onClick={() => toggleModal('screensaver')}
+              title="Ambient Screensaver View with Analogue Clocks"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+              style={{ color: stationPalette.textContrast }}
+            >
+              <span className="material-symbols-outlined text-[15px]">schedule</span>
+              <span className="hidden md:inline">Clock</span>
+            </button>
+
+            {/* Dark / Light Toggle */}
+            <button
+              onClick={toggleTheme}
+              title="Toggle theme"
+              className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+              style={{ color: stationPalette.textContrast }}
+            >
+              <span className="material-symbols-outlined text-[15px]">
+                {isLightMode ? 'dark_mode' : 'light_mode'}
+              </span>
+            </button>
+
+            {/* Zen Mode */}
+            <button
+              onClick={() => setIsZenMode(true)}
+              title="Enter Zen Mode (Z)"
+              className="p-1.5 rounded-lg hover:bg-white/10 text-white/80 hover:text-white transition-colors"
+            >
+              <span className="material-symbols-outlined text-[15px]">fullscreen</span>
+            </button>
+          </div>
+        </header>
+      )}
+
+      {/* Zen Mode Exit Button */}
+      {isZenMode && (
+        <div className="absolute top-4 right-6 z-40">
+          <button
+            onClick={() => setIsZenMode(false)}
+            title="Exit Zen Mode (Z / Esc)"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-black/60 hover:bg-black/80 border border-white/10 text-xs font-mono text-white transition-all backdrop-blur-md"
+          >
+            <span className="material-symbols-outlined text-[15px]">fullscreen_exit</span>
+            <span>Exit Zen</span>
+          </button>
         </div>
       )}
 
-      {/* ZOOMABLE CARTOGRAPHY WORLD MAP (All 12,845 Places, Zero-Key Cyber & Natural Tiles) */}
+      {/* 2. FULLSCREEN INTERACTIVE CARTOGRAPHY MAP (Animated with live audio beats) */}
       <WorldMap
         stations={featuredStations}
         allStations={allStations}
         allPlaces={RADIO_GARDEN_ALL_PLACES}
         activeStation={activeStation}
         onSelectStation={handleSelectStation}
-        isPlaying={isPlaying}
+        isPlaying={!isMuted}
         isLightMode={isLightMode}
-        skinTheme={currentSkin}
+        palette={stationPalette}
         onMapClick={closeAllOverlays}
       />
 
-      {/* BOTTOM FLOATING PLAYER PILL WITH INTEGRATED PRESETS */}
+      {/* 3. DOCKED BOTTOM FLOATING PLAYER (Continuous Play, Only Mute/Unmute & Volume) */}
       {!isZenMode && (
         <FloatingPlayerPill
           activeStation={activeStation}
           currentFrequency={currentFrequency}
-          isPlaying={isPlaying}
           isMuted={isMuted}
           volume={volume}
-          onTogglePlay={handleTogglePlay}
           onToggleMute={handleToggleMute}
           onVolumeChange={handleVolumeChange}
           onScrubFrequency={handleScrubFrequency}
@@ -578,42 +454,44 @@ export default function App() {
           isLightMode={isLightMode}
           onOpenAudioSettings={() => toggleModal('audio_settings')}
           onOpenBookmarks={() => toggleModal('bookmarks')}
+          palette={stationPalette}
         />
       )}
 
-      {/* WALLPAPERS & SKINS MODAL */}
-      <WallpaperModal
-        isOpen={activeModal === 'wallpapers'}
-        onClose={() => setActiveModal(null)}
-        currentWallpaper={currentWallpaper}
-        onSelectWallpaper={handleSelectWallpaper}
-        currentSkin={currentSkin}
-        onSelectSkin={handleSelectSkin}
-        isLightMode={isLightMode}
-        onToggleTheme={toggleTheme}
-        onLaunchScreensaver={() => toggleModal('screensaver')}
-      />
-
-      {/* POLISHED DESKTOP WALLPAPER / SCREENSAVER VIEW */}
+      {/* 4. SCREENSAVER VIEW WITH DUAL ANALOGUE CLOCKS & APPLE WATCH ACTIVITY BADGES */}
       <ScreensaverView
         isOpen={activeModal === 'screensaver'}
         onClose={() => setActiveModal(null)}
         activeStation={activeStation}
-        isPlaying={isPlaying}
+        stations={featuredStations}
+        onSelectStation={handleSelectStation}
         isLightMode={isLightMode}
-        skinTheme={currentSkin}
+        palette={stationPalette}
       />
 
-      {/* DX LOGBOOK MODAL */}
-      <DXLogbookModal
-        isOpen={activeModal === 'logbook'}
+      {/* Quick Search Palette (Cmd+K) */}
+      <QuickSearchModal
+        isOpen={activeModal === 'search'}
         onClose={() => setActiveModal(null)}
+        stations={allStations}
         activeStation={activeStation}
         onSelectStation={handleSelectStation}
-        stations={allStations}
+        favorites={favorites}
+        onToggleFavorite={toggleFavorite}
       />
 
-      {/* DSP AUDIO HARDWARE SETTINGS MODAL */}
+      {/* Presets / Bookmarks Drawer */}
+      <BookmarksDrawer
+        isOpen={activeModal === 'bookmarks'}
+        onClose={() => setActiveModal(null)}
+        stations={allStations}
+        favorites={favorites}
+        activeStation={activeStation}
+        onSelectStation={handleSelectStation}
+        onToggleFavorite={toggleFavorite}
+      />
+
+      {/* Acoustic Hardware Equalizer & Sleep Timer */}
       <AudioSettingsModal
         isOpen={activeModal === 'audio_settings'}
         onClose={() => setActiveModal(null)}
@@ -627,55 +505,6 @@ export default function App() {
         onToggleCosmic={handleToggleCosmic}
         sleepMinutesLeft={sleepMinutesLeft}
         onSetSleepTimer={(mins) => setSleepMinutesLeft(mins)}
-      />
-
-      {/* QUICK SEARCH PALETTE (CMD+K / /) */}
-      <QuickSearchModal
-        isOpen={activeModal === 'search'}
-        onClose={() => setActiveModal(null)}
-        stations={allStations}
-        activeStation={activeStation}
-        onSelectStation={handleSelectStation}
-        favorites={favorites}
-        onToggleFavorite={toggleFavorite}
-      />
-
-      {/* PRESETS & BOOKMARKS DRAWER */}
-      <BookmarksDrawer
-        isOpen={activeModal === 'bookmarks'}
-        onClose={() => setActiveModal(null)}
-        stations={allStations}
-        favorites={favorites}
-        activeStation={activeStation}
-        onSelectStation={handleSelectStation}
-        onToggleFavorite={toggleFavorite}
-      />
-
-      {/* CRT SIGNAL OSCILLOSCOPE MODAL */}
-      <OscilloscopeModal
-        isOpen={activeModal === 'oscilloscope'}
-        onClose={() => setActiveModal(null)}
-        activeStation={activeStation}
-        currentFrequency={currentFrequency}
-        isPlaying={isPlaying}
-      />
-
-      {/* RADIO GARDEN DIRECTORY DRAWER */}
-      <StationDirectoryDrawer
-        isOpen={activeModal === 'directory'}
-        onClose={() => setActiveModal(null)}
-        stations={allStations}
-        activeStation={activeStation}
-        onSelectStation={handleSelectStation}
-        favorites={favorites}
-        onToggleFavorite={toggleFavorite}
-      />
-
-      {/* GOOGLE ANALYTICS 4 LIVE TELEMETRY MODAL */}
-      <AnalyticsModal
-        isOpen={activeModal === 'analytics'}
-        onClose={() => setActiveModal(null)}
-        isLightMode={isLightMode}
       />
     </div>
   );
